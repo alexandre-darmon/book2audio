@@ -23,9 +23,9 @@ One goal: French audiobooks that sound read, made on your own Mac, with an insta
 
 - **A Mac app.** A real `.app` to download, not signed by Apple at first: macOS will ask for a confirmation on first launch.
 - **Faster French.** Any model that keeps Voxtral's quality at a higher speed.
-- **Optional cloud voice.** Reading through a paid API for those who prefer speed to privacy. Off by default: the point of book2audio is that nothing leaves the Mac.
 
 ## Not planned
 
 - Removing DRM. book2audio reads files you can already open.
 - Rewriting the text. The book is read as written.
+- A paid cloud voice. At API prices, a long book costs about as much as its professionally narrated audiobook. Reading locally is free once the Mac is yours, and that is the point.
