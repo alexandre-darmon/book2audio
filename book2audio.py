@@ -697,7 +697,7 @@ def main(argv: list[str] | None = None) -> int:
 # --------------------------------------------------------------------------
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>book2audio</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='.5' y='.5' width='63' height='63' rx='13' fill='%23111113' stroke='%2326262B'/%3E%3Cpath d='M17 35V41M30 29V41' fill='none' stroke='%23F7F7F7' stroke-width='6' stroke-linecap='square'/%3E%3Crect x='42' y='20' width='9' height='24' fill='%238C52EE'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='.5' y='.5' width='63' height='63' rx='13' fill='%23111113' stroke='%2326262B'/%3E%3Cpath d='M13 30V34M22 26V38M42 26V38M51 30V34' fill='none' stroke='%23F7F7F7' stroke-width='6' stroke-linecap='square'/%3E%3Crect x='28' y='20' width='8' height='24' fill='%238C52EE'/%3E%3C/svg%3E">
 <script>try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -758,7 +758,7 @@ PAGE = r"""<!doctype html>
   audio { width:100%; margin-top:14px; height:36px; } .hide { display:none !important; }
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
 </style></head><body>
-<header><div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="28" height="28" role="img" aria-label="book2audio"><rect x="0.5" y="0.5" width="63" height="63" rx="13" fill="var(--tile)" stroke="var(--tile-line)"/><path d="M17 35 V41 M30 29 V41" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="42" y="20" width="9" height="24" fill="#8C52EE"/></svg><span class="word">book2audio</span><span class="tag">Ebooks in, audiobooks out. All on this Mac.</span>
+<header><div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="28" height="28" role="img" aria-label="book2audio"><rect x="0.5" y="0.5" width="63" height="63" rx="13" fill="var(--tile)" stroke="var(--tile-line)"/><path d="M13 30 V34 M22 26 V38 M42 26 V38 M51 30 V34" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="28" y="20" width="8" height="24" fill="#8C52EE"/></svg><span class="word">book2audio</span><span class="tag">Ebooks in, audiobooks out. All on this Mac.</span>
 <button id="theme" class="ghost" aria-label="Switch between dark and light theme">Light</button></div></header>
 <main>
 
