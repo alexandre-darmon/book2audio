@@ -74,6 +74,7 @@ ICLOUD = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs"
 PAUSE_SENTENCE = 0.15   # seconds of silence between chunks of one paragraph
 PAUSE_PARAGRAPH = 0.55  # between paragraphs
 PAUSE_TITLE = 1.0       # after the chapter title
+PAUSE_SCENE = 1.4       # at a scene break ("* * *")
 MAX_CHARS = 350         # max characters sent to the model at once
 
 
@@ -115,8 +116,14 @@ def _html_to_paragraphs(html: bytes) -> tuple[str | None, list[str]]:
     soup = BeautifulSoup(html, "html.parser")
     body = soup.body or soup
     # Things nobody wants read aloud: code, footnote markers, menus, tables.
-    for tag in body.find_all(["script", "style", "sup", "nav", "table", "svg", "head"]):
+    for tag in body.find_all(["script", "style", "nav", "table", "svg", "head"]):
         tag.decompose()
+    for tag in body.find_all("sup"):
+        mark = tag.get_text().strip()
+        if tag.find("a") or not mark or re.fullmatch(r"[\d*†‡\[\]().,\s]+", mark):
+            tag.decompose()                          # a footnote mark
+        else:
+            tag.unwrap()                             # part of a word: XIX<sup>e</sup>, 1<sup>er</sup>, M<sup>me</sup>
     heading = body.find(["h1", "h2", "h3"])
     heading_text = _clean(heading.get_text(" ")) if heading else None
     for br in body.find_all("br"):
@@ -235,9 +242,137 @@ def to_epub(path: Path, workdir: Path) -> Path:
 # --------------------------------------------------------------------------
 # 2. Cut the text into pieces the model reads well
 # --------------------------------------------------------------------------
+NOT_A_SENTENCE_END = re.compile(r"(?:^|[\s(«“\"'-])(?:[A-ZÀ-Ý]|MM|Mr|Mrs|Ms|Dr|Pr|St|Ste|Mgr|Jr|Sr|vs|cf|vol|chap|art|fig|env|av|apr)\.$")
+
+
+# ---- Reading rules: turn what is written for the eye into what should be said ----
+_UNITS = ["zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix", "onze", "douze",
+          "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"]
+_TENS = {20: "vingt", 30: "trente", 40: "quarante", 50: "cinquante", 60: "soixante", 80: "quatre-vingt"}
+
+
+def fr_number(n: int) -> str:
+    """A whole number from 0 to 9999 in French words."""
+    if n < 20:
+        return _UNITS[n]
+    if n < 100:
+        ten, unit = (60, n - 60) if 70 <= n < 80 else (80, n - 80) if n >= 80 else (n // 10 * 10, n % 10)
+        if unit == 0:
+            return "quatre-vingts" if ten == 80 else _TENS[ten]
+        if unit in (1, 11) and ten != 80:
+            return f"{_TENS[ten]} et {_UNITS[unit]}"
+        return f"{_TENS[ten]}-{_UNITS[unit]}"
+    if n < 1000:
+        hundreds, rest = divmod(n, 100)
+        head = "cent" if hundreds == 1 else f"{_UNITS[hundreds]} cent"
+        return head + ("s" if hundreds > 1 and rest == 0 else "") + (f" {fr_number(rest)}" if rest else "")
+    thousands, rest = divmod(n, 1000)
+    head = "mille" if thousands == 1 else f"{fr_number(thousands)} mille"
+    return head + (f" {fr_number(rest)}" if rest else "")
+
+
+def fr_ordinal(n: int, feminine: bool = False) -> str:
+    if n == 1:
+        return "première" if feminine else "premier"
+    word = fr_number(n)
+    if word.endswith("s") and n in (80,) or word.endswith("cents"):
+        word = word[:-1]
+    if word.endswith("e"):
+        word = word[:-1]
+    elif word.endswith("cinq"):
+        word += "u"
+    elif word.endswith("neuf"):
+        word = word[:-1] + "v"
+    return word + "ième"
+
+
+def roman(text: str) -> int | None:
+    values = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+    if not text or not re.fullmatch(r"M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})", text):
+        return None
+    total = 0
+    for a, b in zip(text, text[1:] + " "):
+        total += -values[a] if b != " " and values[a] < values[b] else values[a]
+    return total
+
+
+_FR_WORDS = [(r"\bMM\.", "Messieurs"), (r"\bMmes\b\.?", "Mesdames"), (r"\bMme\b\.?", "Madame"), (r"\bMlles\b\.?", "Mesdemoiselles"),
+             (r"\bMlle\b\.?", "Mademoiselle"), (r"\bM\.(?=\s+[A-ZÀ-Ý])", "Monsieur"), (r"\bDr\b\.?(?=\s+[A-ZÀ-Ý])", "Docteur"),
+             (r"\bPr\b\.?(?=\s+[A-ZÀ-Ý])", "Professeur"), (r"\bMgr\b\.?", "Monseigneur"), (r"\bSte\b\.?(?=[\s-]+[A-ZÀ-Ý])", "Sainte"),
+             (r"\bSt\b\.?(?=[\s-]+[A-ZÀ-Ý])", "Saint"), (r"\b[Nn]°\s*", "numéro "), (r"\bcf\.", "voir"), (r"\bp\.\s*(?=\d)", "page "),
+             (r"\bav\. J\.-C\.", "avant Jésus-Christ"), (r"\bapr\. J\.-C\.", "après Jésus-Christ"), (r"\bc\.-à-d\.", "c'est-à-dire")]
+_EN_WORDS = [(r"\b(Mr|Mrs|Ms|Dr|St|Jr|Sr|vs)\.", r"\1"), (r"\be\.g\.,?", "for example,"), (r"\bi\.e\.,?", "that is,")]
+_PARTS = r"chapitre|livre|partie|tome|acte|scène|volume|chant|chapter|book|part|act|scene"
+
+
+def prepare_text(text: str, language: str = "fr") -> str:
+    """Rewrite nothing: only spell out what a narrator would say differently from what is printed."""
+    french = language.startswith("fr")
+    text = re.sub(r"(?<=[\w»”\"'.,;:!?])\s?\[\d+\]", "", text)          # [12] footnote calls
+    text = re.sub(r"(?<=[^\W\d])[¹²³⁴⁵⁶⁷⁸⁹⁰]+|(?<=\w)\*+", "", text)       # word¹, word*
+    text = text.replace("...", "…")
+    if len(text) < 120 and re.search(r"[A-ZÀ-Ý]{2}", text) and not re.search(r"[a-zà-ÿ]", text):
+        # A line in capitals is a heading, not an acronym to spell out. Roman numerals keep their capitals.
+        text = " ".join(w if roman(w.strip(".,:;")) and len(w.strip(".,:;")) > 1 or w in ("I", "V", "X") else w.lower()
+                        for w in text.split())
+        text = text[:1].upper() + text[1:]
+
+    def part_number(m):
+        n = roman(m.group(2))
+        if n is None:
+            return m.group(0)
+        if not french:
+            return f"{m.group(1)} {n}"
+        return f"{m.group(1)} {'premier' if n == 1 else fr_number(n)}"
+    if french:
+        text = re.sub(rf"\b({_PARTS})\s+([IVXL]+)\b", part_number, text, flags=re.I)
+    else:                                            # never the pronoun: "the book I read"
+        text = re.sub(r"\b(Chapter|Book|Part|Act|Scene|Volume)\s+([IVXL]{2,}|V|X)\b", part_number, text)
+
+    if french:
+        def century(m):
+            n = roman(m.group(1))
+            return f"{fr_ordinal(n)} siècle" if n else m.group(0)
+        text = re.sub(r"\b([IVX]+)\s?(?:e|ème|ᵉ|er)?\s+siècle", century, text)
+        text = re.sub(r"\bIer\b", "premier", text)
+        text = re.sub(r"\bIre\b", "première", text)
+
+        def regnal(m):
+            n = roman(m.group(2))
+            return f"{m.group(1)} {fr_number(n)}" if n else m.group(0)
+        text = re.sub(r"\b([A-ZÀ-Ý][a-zà-ÿ]+(?:-[A-ZÀ-Ý][a-zà-ÿ]+)?)\s+((?=[IVX]{2,})(?:X{0,3})(?:IX|IV|V?I{0,3}))\b", regnal, text)
+        text = re.sub(r"\b(\d{1,2})\s?h\s?(\d{2})\b", r"\1 heures \2", text)          # 7 h 12
+        text = re.sub(r"\b(\d{1,2})\s?h\b(?!')", r"\1 heures", text)                    # 7 h
+        text = re.sub(r"\b1 heures\b", "1 heure", text)
+        text = re.sub(r"\b1(?:er|ᵉʳ)\b", "premier", text)
+        text = re.sub(r"\b1(?:re|ère)\b", "première", text)
+        text = re.sub(r"\b(\d{1,3})(?:e|ème|ᵉ)\b", lambda m: fr_ordinal(int(m.group(1))), text)
+        text = re.sub(r"\betc\.(?=\s+[A-ZÀ-Ý«—–]|\s*$)", "et cetera.", text)
+        text = re.sub(r"\betc\.", "et cetera", text)
+        for pattern, word in _FR_WORDS:
+            text = re.sub(pattern, word, text)
+    else:
+        text = re.sub(r"\betc\.(?=\s+[A-Z“\"]|\s*$)", "et cetera.", text)
+        text = re.sub(r"\betc\.", "et cetera", text)
+        for pattern, word in _EN_WORDS:
+            text = re.sub(pattern, word, text)
+
+    text = re.sub(r"^\s*[—–-]\s+", "", text)                               # a line of dialogue: the dash is not said
+    text = re.sub(r"\s+[—–]\s+|\s+-\s+", ", ", text)                       # a dash inside a sentence is a breath
+    text = re.sub(r",\s*([,.;:!?…])", r"\1", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def split_paragraph(text: str, max_chars: int = MAX_CHARS) -> list[str]:
     """Cut on sentence ends first, then commas, so the voice never stops mid-phrase."""
     sentences = re.findall(r".+?(?:[.!?…]+[\"'”’»)\]]*(?=\s|$)|$)", text, flags=re.S) or [text]
+    merged: list[str] = []                           # "J. R. R. Tolkien", "M. Dupont": not sentence ends
+    for part in sentences:
+        if merged and NOT_A_SENTENCE_END.search(merged[-1].rstrip()):
+            merged[-1] += part
+        else:
+            merged.append(part)
+    sentences = merged
     pieces: list[str] = []
     for s in (s.strip() for s in sentences):
         if not s:
@@ -412,16 +547,21 @@ class Synth:
         return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
 
 
-def build_script(chapter: Chapter, read_title: bool, max_chars: int = MAX_CHARS) -> list[tuple[str, float]]:
+def build_script(chapter: Chapter, read_title: bool, language: str = "fr", plain: bool = False,
+                 max_chars: int = MAX_CHARS) -> list[tuple[str, float]]:
     """The chapter as a list of (passage to read, silence after it)."""
+    say = (lambda t: t) if plain else (lambda t: prepare_text(t, language))
     script: list[tuple[str, float]] = []
     if read_title:
-        script.append((chapter.title.rstrip(".") + ".", PAUSE_TITLE))
+        script.append((say(chapter.title).rstrip(".") + ".", PAUSE_TITLE))
     for paragraph in chapter.paragraphs:
-        chunks = split_paragraph(paragraph, max_chars)
+        if not re.search(r"\w", paragraph):          # "* * *": a scene break is a longer silence, not words
+            if script:
+                script[-1] = (script[-1][0], max(script[-1][1], PAUSE_SCENE))
+            continue
+        chunks = [c for c in split_paragraph(say(paragraph), max_chars) if re.search(r"\w", c)]
         for i, chunk in enumerate(chunks):
-            if re.search(r"\w", chunk):              # skip "***" style separators
-                script.append((chunk, PAUSE_PARAGRAPH if i == len(chunks) - 1 else PAUSE_SENTENCE))
+            script.append((chunk, PAUSE_PARAGRAPH if i == len(chunks) - 1 else PAUSE_SENTENCE))
     return script
 
 
@@ -605,27 +745,81 @@ for line in sys.stdin:
 """
 
 
-class PocketSynth:
-    def __init__(self, language: str, voice: str | None):
+# Kyutai TTS 1.6B (French and English) through Kyutai's own MLX code. It needs an older
+# version of MLX than the other models, one more reason to give it its own environment.
+KYUTAI_VOICES = {"fr": "cml-tts/fr/10087_11650_000028-0002_enhanced.wav",
+                 "en": "expresso/ex03-ex01_happy_001_channel1_334s.wav"}
+KYUTAI_WORKER = r"""
+import json, os, sys
+proto = os.fdopen(os.dup(1), "wb")
+os.dup2(2, 1)
+import mlx.core as mx
+import numpy as np
+import sentencepiece
+from moshi_mlx import models
+from moshi_mlx.models.tts import DEFAULT_DSM_TTS_REPO, DEFAULT_DSM_TTS_VOICE_REPO, TTSModel
+from moshi_mlx.utils.loaders import hf_get
+
+mx.random.seed(299792458)
+raw_config = hf_get("config.json", DEFAULT_DSM_TTS_REPO)
+with open(hf_get(raw_config), "r") as f:
+    raw_config = json.load(f)
+mimi_weights = hf_get(raw_config["mimi_name"], DEFAULT_DSM_TTS_REPO)
+moshi_weights = hf_get(raw_config.get("moshi_name", "model.safetensors"), DEFAULT_DSM_TTS_REPO)
+tokenizer = hf_get(raw_config["tokenizer_name"], DEFAULT_DSM_TTS_REPO)
+lm_config = models.LmConfig.from_config_dict(raw_config)
+lm_config.transformer.max_seq_len = lm_config.transformer.context
+model = models.Lm(lm_config)
+model.set_dtype(mx.bfloat16)
+model.load_pytorch_weights(str(moshi_weights), lm_config, strict=True)
+text_tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer))
+audio_tokenizer = models.mimi.Mimi(models.mimi_202407(lm_config.generated_codebooks))
+audio_tokenizer.load_pytorch_weights(str(mimi_weights), strict=True)
+tts = TTSModel(model, audio_tokenizer, text_tokenizer, voice_repo=DEFAULT_DSM_TTS_VOICE_REPO, temp=0.6, cfg_coef=1,
+               max_padding=8, initial_padding=2, final_padding=2, padding_bonus=0, raw_config=raw_config)
+cfg = None
+no_text = no_prefix = True
+if tts.valid_cfg_conditionings:
+    cfg, tts.cfg_coef, no_text, no_prefix = tts.cfg_coef, 1.0, False, False
+voices = [tts.get_voice_path(sys.argv[2])] if tts.multi_speaker else []
+attributes = [tts.make_condition_attributes(voices, cfg)]
+proto.write((json.dumps({"rate": int(tts.mimi.sample_rate)}) + "\n").encode()); proto.flush()
+for line in sys.stdin:
+    chunks = []
+    def on_frame(frame):
+        if (frame == -1).any():
+            return
+        pcm = tts.mimi.decode_step(frame[:, :, None])
+        chunks.append(np.array(mx.clip(pcm[0, 0], -1, 1)))
+    tts.mimi.reset_state()
+    tts.generate([tts.prepare_script([json.loads(line)["text"]])], attributes,
+                 cfg_is_no_prefix=no_prefix, cfg_is_no_text=no_text, on_frame=on_frame)
+    audio = (np.concatenate(chunks, -1) if chunks else np.zeros(0)).astype("<f4").reshape(-1)
+    proto.write((json.dumps({"samples": int(audio.size)}) + "\n").encode()); proto.write(audio.tobytes()); proto.flush()
+"""
+
+
+class WorkerSynth:
+    """A model that lives in its own process and environment. Text goes in, raw audio comes back."""
+
+    def __init__(self, label: str, key: str, worker: str, packages: list[str], argv: list[str]):
         uv = shutil.which("uv")
         if not uv:
-            sys.exit("Pocket TTS needs uv to install itself (https://docs.astral.sh/uv/).")
-        short = language.split("-")[0]
-        name, default_voice = POCKET.get(short) or POCKET["en"]
-        voice = voice or default_voice
-        self.key = f"pocket|{name}|{voice}"
-        self._dir = tempfile.mkdtemp(prefix="book2audio-pocket-")
+            sys.exit(f"{label} needs uv to install itself (https://docs.astral.sh/uv/).")
+        self.label, self.key = label, key
+        self._dir = tempfile.mkdtemp(prefix="book2audio-worker-")
         script = Path(self._dir) / "worker.py"
-        script.write_text(POCKET_WORKER)
-        REPORT.log(f"Loading Pocket TTS ({name}, voice={voice}). The first use installs it and downloads the model.")
-        self.proc = subprocess.Popen([uv, "run", "--no-project", "--python", "3.12", "--with", "pocket-tts",
-                                      "python", "-u", str(script), name, voice], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        script.write_text(worker)
+        REPORT.log(f"Loading {label} ({', '.join(argv)}). The first use installs it and downloads the model.")
+        with_args = [x for name in packages for x in ("--with", name)]
+        self.proc = subprocess.Popen([uv, "run", "--no-project", "--python", "3.12", *with_args,
+                                      "python", "-u", str(script), *argv], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         self.sample_rate = int(self._header()["rate"])
 
     def _header(self) -> dict:
         line = self.proc.stdout.readline()
         if not line:
-            raise RuntimeError("Pocket TTS stopped. The reason is in the Terminal window, just above.")
+            raise RuntimeError(f"{self.label} stopped. The reason is in the Terminal window, just above.")
         return json.loads(line)
 
     def say(self, text: str):
@@ -638,7 +832,7 @@ class PocketSynth:
         while len(data) < size:
             part = self.proc.stdout.read(size - len(data))
             if not part:
-                raise RuntimeError("Pocket TTS stopped in the middle of a passage.")
+                raise RuntimeError(f"{self.label} stopped in the middle of a passage.")
             data += part
         return np.frombuffer(data, dtype="<f4").copy()
 
@@ -648,13 +842,25 @@ class PocketSynth:
         shutil.rmtree(self._dir, ignore_errors=True)
 
 
+def worker_synth(model: str, language: str, voice: str | None) -> WorkerSynth:
+    short = language.split("-")[0]
+    if model == "pocket":
+        name, default_voice = POCKET.get(short) or POCKET["en"]
+        voice = voice or default_voice
+        return WorkerSynth("Pocket TTS", f"pocket|{name}|{voice}", POCKET_WORKER, ["pocket-tts"], [name, voice])
+    voice = voice or KYUTAI_VOICES.get(short) or KYUTAI_VOICES["en"]
+    return WorkerSynth("Kyutai TTS", f"kyutai|{voice}", KYUTAI_WORKER, ["moshi_mlx==0.2.12", "numpy", "sentencepiece"],
+                       [short, voice])
+
+
+WORKER_MODELS = ("pocket", "kyutai")
+
 _synth_cache: dict = {}
 
 
 def default_model(language: str) -> str:
-    # French: the 4-bit Voxtral measured 2.7x real time on a MacBook Pro M6, against 1.05x for the
-    # full model, with a voice judged just as good by ear.
-    return "voxtral-4bit" if language.startswith("fr") else "kokoro"
+    """The best model this machine can run for this language (see recommend)."""
+    return recommend(language)["recommended"]
 
 
 def make_synth(args, language: str):
@@ -673,7 +879,7 @@ def make_synth(args, language: str):
             mx.clear_cache()
         except Exception:
             pass
-        _synth_cache[key] = (PocketSynth(language, args.voice) if model.lower() == "pocket"
+        _synth_cache[key] = (worker_synth(model.lower(), language, args.voice) if model.lower() in WORKER_MODELS
                              else Synth(model, language, args.voice, args.speed, args.lang_code))
     return _synth_cache[key]
 
@@ -726,16 +932,10 @@ def run_preview(book: Book, chapter_number: int, language: str, args, out_dir: P
     """About one minute of one chapter, to judge the voice."""
     fmt = pick_format(args.format)
     out_dir.mkdir(parents=True, exist_ok=True)
-    first = book.chapters[chapter_number - 1]
-    sample, size = Chapter(first.title), 0
-    for p in first.paragraphs:
-        sample.paragraphs.append(p)
-        size += len(p)
-        if size > 900:
-            break
+    sample = sample_of(book, chapter_number)
     target = out_dir / f"preview.{fmt}"
     pcm = out_dir / ".tmp-preview.pcm"
-    script = build_script(sample, not args.no_titles)
+    script = build_script(sample, not args.no_titles, language, args.plain)
     synth = make_synth(args, language)
     _, _, rate = render_chapter(synth, script, pcm, Tracker(script_chars(script)), resume=False)
     encode(pcm, rate, target, {"title": "Preview"})
@@ -743,17 +943,89 @@ def run_preview(book: Book, chapter_number: int, language: str, args, out_dir: P
     return target
 
 
-MODEL_LABELS = {"voxtral": "Voxtral", "voxtral-4bit": "Voxtral 4-bit", "kokoro": "Kokoro", "pocket": "Pocket TTS"}
+# What each model needs while it reads: memory in GB (model plus working room), and whether it uses the
+# Apple Silicon GPU. Memory figures are estimates, refined as people report their own machines.
+MODELS = {
+    "voxtral-4bit": {"label": "Voxtral 4-bit", "need": 3.5, "gpu": True, "langs": "fr en es de it pt nl ar hi"},
+    "voxtral": {"label": "Voxtral", "need": 9.0, "gpu": True, "langs": "fr en es de it pt nl ar hi"},
+    "kyutai": {"label": "Kyutai TTS", "need": 5.0, "gpu": True, "langs": "fr en"},
+    "pocket": {"label": "Pocket TTS", "need": 1.5, "gpu": False, "langs": "fr en de es it pt"},
+    "kokoro": {"label": "Kokoro", "need": 1.5, "gpu": True, "langs": "en fr es it pt hi ja zh"},
+}
+MODEL_LABELS = {k: v["label"] for k, v in MODELS.items()}
+PREFERENCE = {"fr": ["voxtral-4bit", "voxtral", "pocket", "kokoro"], "en": ["kokoro", "voxtral-4bit", "pocket"]}
+_machine: dict = {}
+
+
+def machine_info() -> dict:
+    """The chip and the memory of this computer."""
+    if _machine:
+        return _machine
+    import platform
+
+    chip, memory = platform.processor() or platform.machine(), 0.0
+    try:
+        if sys.platform == "darwin":
+            chip = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True).stdout.strip() or chip
+            memory = int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True).stdout.strip()) / 2**30
+        else:
+            memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    except (OSError, ValueError):
+        pass
+    _machine.update(chip=chip, memory_gb=round(memory), cores=os.cpu_count() or 1,
+                    apple_silicon=sys.platform == "darwin" and platform.machine() == "arm64")
+    return _machine
+
+
+def model_fit(model: str, machine: dict | None = None) -> str:
+    """'fits', 'tight' or 'no'. The rule keeps 20% of the memory free, plus 4 GB for macOS and other apps."""
+    machine = machine or machine_info()
+    spec = MODELS.get(model)
+    if not spec or not machine.get("memory_gb"):
+        return "fits"                                # unknown model or machine: do not block anything
+    if spec["gpu"] and not machine.get("apple_silicon"):
+        return "no"
+    room = machine["memory_gb"] * 0.8
+    return "fits" if spec["need"] <= room - 4 else "tight" if spec["need"] <= room - 2 else "no"
+
+
+def recommend(language: str, machine: dict | None = None) -> dict:
+    """Which models suit this machine for this language, and the one to pick."""
+    machine = machine or machine_info()
+    short = language.split("-")[0]
+    speeds = load_speeds()
+    rows = []
+    for model, spec in MODELS.items():
+        fit = model_fit(model, machine)
+        rows.append({"model": model, "label": spec["label"], "fit": fit, "speaks": short in spec["langs"].split(),
+                     "where": "GPU" if spec["gpu"] else "CPU", "need_gb": spec["need"], "speed": speeds.get(model)})
+    order = PREFERENCE.get(short) or [m for m, v in MODELS.items() if short in v["langs"].split()] or PREFERENCE["en"]
+    usable = {r["model"]: r for r in rows if r["speaks"]}
+    best = next((m for m in order if m in usable and usable[m]["fit"] == "fits"), None) \
+        or next((m for m in order if m in usable and usable[m]["fit"] == "tight"), None) or "pocket"
+    return {"chip": machine["chip"], "memory_gb": machine["memory_gb"], "models": rows, "recommended": best}
+
+
+def print_check(language: str) -> None:
+    r = recommend(language)
+    print(f"This computer: {r['chip']}, {r['memory_gb']} GB of memory")
+    print(f"For books in '{language}':")
+    words = {"fits": "fits", "tight": "tight, close other apps", "no": "does not fit"}
+    for row in r["models"]:
+        if row["speaks"]:
+            speed = f"about {row['speed']}x real time" if row["speed"] else "speed not measured yet"
+            star = "  <- recommended" if row["model"] == r["recommended"] else ""
+            print(f"  {row['label']:14s} {row['where']}  needs ~{row['need_gb']} GB  {words[row['fit']]:24s} {speed}{star}")
 
 
 def compare_list(language: str) -> list[str]:
-    return ["voxtral", "voxtral-4bit", "pocket"] if language.startswith("fr") else ["kokoro", "voxtral", "pocket"]
+    short = language.split("-")[0]
+    wanted = ["voxtral", "voxtral-4bit", "kyutai", "pocket"] if short == "fr" else ["kokoro", "voxtral-4bit", "kyutai", "pocket"]
+    return [m for m in wanted if short in MODELS[m]["langs"].split() and model_fit(m) != "no"]
 
 
-def run_compare(book: Book, chapter_number: int, language: str, args, out_dir: Path, models: list[str] | None = None) -> list[dict]:
-    """Read the same one-minute passage with several models, and time each one on this machine."""
-    fmt = pick_format(args.format)
-    out_dir.mkdir(parents=True, exist_ok=True)
+def sample_of(book: Book, chapter_number: int) -> Chapter:
+    """About one minute from the start of a chapter."""
     first = book.chapters[chapter_number - 1]
     sample, size = Chapter(first.title), 0
     for p in first.paragraphs:
@@ -761,7 +1033,106 @@ def run_compare(book: Book, chapter_number: int, language: str, args, out_dir: P
         size += len(p)
         if size > 900:
             break
-    script = build_script(sample, not args.no_titles)
+    return sample
+
+
+# A short text written for this purpose, free to use, that touches what a narrator must get right:
+# titles, abbreviations, a century, a clock time, dialogue, a question, an exclamation.
+DEMO = {
+    "fr": Chapter("Chapitre III", [
+        "Le train de 7 h 12 entra en gare avec onze minutes de retard. M. Lambert replia son journal, consulta sa montre, "
+        "puis regarda Mme Roche, qui dormait encore contre la vitre.",
+        "— Nous arrivons, dit-il doucement.",
+        "Elle ouvrit les yeux — lentement, comme on remonte d'un puits — et sourit.",
+        "— Déjà ? J'ai rêvé que nous étions revenus au XIXe siècle. Il y avait des fiacres, des becs de gaz, etc. "
+        "Vous portiez un chapeau ridicule !",
+        "— Je n'en doute pas.",
+        "Dehors, la pluie avait cessé. Sur le quai n° 4, un enfant courait après un ballon rouge, et personne, "
+        "absolument personne, ne semblait pressé.",
+    ]),
+    "en": Chapter("Chapter III", [
+        "The 7:12 train pulled in eleven minutes late. Mr. Lambert folded his newspaper, checked his watch, "
+        "and looked at Mrs. Roche, still asleep against the window.",
+        "“We're here,” he said quietly.",
+        "She opened her eyes - slowly, like someone climbing out of a well - and smiled.",
+        "“Already? I dreamed we had gone back to the nineteenth century. There were cabs, gas lamps, etc. "
+        "You were wearing a ridiculous hat!”",
+        "“I don't doubt it.”",
+        "Outside, the rain had stopped. On platform 4, a child was chasing a red ball, and nobody, "
+        "absolutely nobody, seemed to be in a hurry.",
+    ]),
+}
+
+
+def best_for(model: str) -> str:
+    """The Macs a model suits, from the same memory rule as the recommendation."""
+    sizes = [8, 16, 24, 32]
+    fits = {gb: model_fit(model, {"memory_gb": gb, "apple_silicon": True}) for gb in sizes}
+    ok = next((gb for gb in sizes if fits[gb] == "fits"), None)
+    tight = next((gb for gb in sizes if fits[gb] == "tight"), None)
+    if ok is None:
+        return "more than 32 GB"
+    text = f"{ok} GB and up"
+    return f"{tight} GB if other apps are closed, {text}" if tight and tight < ok else text
+
+
+def write_benchmark(rows: list[dict], language: str, out_dir: Path, prefix: str) -> Path:
+    machine = machine_info()
+    lines = [f"# Benchmark ({language})", "",
+             f"Measured on: {machine['chip']}, {machine['memory_gb']} GB of memory, on {time.strftime('%Y-%m-%d')}.",
+             "Same text for every model, about one minute of audio. Speed includes the model's warm-up.", "",
+             "| Model | Listen | Speed here | Characters per second | Runs on | Memory needed | Suits a Mac with |",
+             "|---|---|---|---|---|---|---|"]
+    for row in rows:
+        spec = MODELS.get(row["model"], {})
+        if row.get("file"):
+            lines.append(f"| {row['label']} | [{row['file']}]({row['file']}) | {row['speed']}x real time | {row['chars_s']} | "
+                         f"{'GPU' if spec.get('gpu') else 'CPU'} | about {spec.get('need', '?')} GB | {best_for(row['model'])} |")
+        else:
+            lines.append(f"| {row['label']} | failed here | | | | | |")
+    lines += ["", "How to read it: 2x real time means one hour of audio takes half an hour to create.",
+              "Memory figures are estimates. Quality is for your ears: listen to the files.", ""]
+    target = out_dir / f"BENCHMARK-{prefix.split('-')[-1]}.md"
+    target.write_text("\n".join(lines), encoding="utf-8")
+    return target
+
+
+def run_demo(args) -> None:
+    """Read the built-in sample (or --demo-text) with every model that fits, for the README."""
+    language = (args.lang or "fr").lower()
+    short = language.split("-")[0]
+    if args.demo_text:
+        blocks = [_clean(b) for b in re.split(r"\n\s*\n", Path(args.demo_text).read_text(encoding="utf-8")) if _clean(b)]
+        sample = Chapter(blocks[0], blocks[1:]) if len(blocks) > 1 else Chapter("", blocks)
+    else:
+        sample = DEMO.get(short) or DEMO["en"]
+    in_repo = (Path.cwd() / "book2audio.py").exists()
+    out_dir = args.out or (Path.cwd() / "demo" if in_repo else Path.home() / "Audiobooks" / "demo")
+    if not sample.title:
+        args.no_titles = True
+    rows = run_compare(sample, language, args, out_dir, [args.model] if args.model else None, prefix=f"demo-{short}")
+    for row in rows:                                 # a small video of the waveform, the only audio GitHub plays inline
+        if row["file"].endswith(".m4a"):
+            audio = out_dir / row["file"]
+            video = audio.with_suffix(".mp4")
+            done = subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(audio), "-filter_complex",
+                                   "color=c=0x0a0a0c:s=1280x320:r=25[bg];[0:a]showwaves=s=1280x320:mode=cline:rate=25:colors=0x8C52EE[w];"
+                                   "[bg][w]overlay=shortest=1,format=yuv420p[v]", "-map", "[v]", "-map", "0:a",
+                                   "-c:v", "libx264", "-preset", "fast", "-c:a", "copy", "-movflags", "+faststart", str(video)],
+                                  capture_output=True)
+            if done.returncode != 0:
+                video.unlink(missing_ok=True)
+    report = write_benchmark(rows, language, out_dir, f"demo-{short}")
+    print("\n" + report.read_text(encoding="utf-8"))
+    print(f"Files and {report.name} are in {out_dir}")
+
+
+def run_compare(sample: Chapter, language: str, args, out_dir: Path, models: list[str] | None = None,
+                prefix: str = "compare") -> list[dict]:
+    """Read the same one-minute passage with several models, and time each one on this machine."""
+    fmt = pick_format(args.format)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    script = build_script(sample, not args.no_titles, language, args.plain)
     results: list[dict] = []
     for model in models or compare_list(language):
         row = {"model": model, "label": MODEL_LABELS.get(model, model), "file": "", "error": ""}
@@ -774,7 +1145,7 @@ def run_compare(book: Book, chapter_number: int, language: str, args, out_dir: P
             started = time.time()
             synth = make_synth(opts, lang)
             row["load_s"] = round(time.time() - started, 1)
-            pcm = out_dir / f".tmp-compare-{model}.pcm"
+            pcm = out_dir / f".tmp-{prefix}-{model}.pcm"
             started = time.time()
             audio_s, _, rate = render_chapter(synth, script, pcm, Tracker(script_chars(script)), resume=False)
             row["compute_s"] = round(time.time() - started, 1)
@@ -782,8 +1153,8 @@ def run_compare(book: Book, chapter_number: int, language: str, args, out_dir: P
             row["speed"] = round(audio_s / max(row["compute_s"], 0.1), 2)
             save_speed(model, row["speed"])
             row["chars_s"] = round(script_chars(script) / max(row["compute_s"], 0.1), 1)
-            target = out_dir / f"compare-{model}.{fmt}"
-            encode(pcm, rate, target, {"title": f"Compare {row['label']}"})
+            target = out_dir / f"{prefix}-{model}.{fmt}"
+            encode(pcm, rate, target, {"title": f"{row['label']}"})
             row["file"] = target.name
             REPORT.log(f"{row['label']}: {row['audio_s']} s of audio in {row['compute_s']} s = {row['speed']}x real time "
                        f"({row['chars_s']} characters per second), model loaded in {row['load_s']} s")
@@ -795,7 +1166,7 @@ def run_compare(book: Book, chapter_number: int, language: str, args, out_dir: P
             row["error"] = (str(e) if isinstance(e, SystemExit) else f"{type(e).__name__}: {e}")[:300]
             REPORT.log(f"{row['label']} failed: {row['error']}")
         REPORT.compare(results, "")
-    REPORT.log(f"Listen to the compare-*.{fmt} files in {out_dir}")
+    REPORT.log(f"Listen to the {prefix}-*.{fmt} files in {out_dir}")
     return results
 
 
@@ -807,7 +1178,7 @@ def run_book(book: Book, selection: list[int], language: str, args, out_dir: Pat
     for n in selection:
         if n not in todo:
             REPORT.log(f"[{n}/{len(book.chapters)}] {book.chapters[n - 1].title}: already done, skipping")
-    scripts = {n: build_script(book.chapters[n - 1], read_titles) for n in todo}
+    scripts = {n: build_script(book.chapters[n - 1], read_titles, language, args.plain) for n in todo}
     REPORT.plan([{"n": n, "title": book.chapters[n - 1].title, "chars": book.chapters[n - 1].chars, "done": n not in todo}
                  for n in selection])
     tracker = Tracker(sum(script_chars(s) for s in scripts.values()))
@@ -871,18 +1242,28 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--chapters", help='which chapters to read, e.g. "1-3,7" (numbers from --list)')
     ap.add_argument("--preview", action="store_true", help="read only about one minute, to judge the voice")
     ap.add_argument("--compare", action="store_true", help="read the same minute with each model and time them on this machine")
+    ap.add_argument("--check", action="store_true", help="show this computer's chip and memory, and the models that suit it")
+    ap.add_argument("--demo", action="store_true", help="read a built-in sample text with each model (no book needed)")
+    ap.add_argument("--demo-text", help="with --demo: a text file to read instead of the built-in sample")
     ap.add_argument("--lang", help="book language, e.g. en, en-gb, fr (default: read from the book)")
     ap.add_argument("--voice", help="voice name (default: a good voice for the language)")
     ap.add_argument("--speed", type=float, default=1.0, help="reading speed, 1.0 = normal")
-    ap.add_argument("--model", help="kokoro, voxtral, voxtral-4bit, pocket, or any mlx-audio TTS model id (default: voxtral-4bit for French books, kokoro otherwise)")
+    ap.add_argument("--model", help="kokoro, voxtral, voxtral-4bit, pocket, kyutai, or any mlx-audio TTS model id (default: the best one this machine can run)")
     ap.add_argument("--lang-code", help="advanced: language value passed as is to the model")
     ap.add_argument("--format", choices=["m4a", "mp3", "wav"], default="m4a")
     ap.add_argument("--no-m4b", action="store_true", help="do not build the single audiobook file (.m4b with chapter markers)")
     ap.add_argument("--iphone", action="store_true", help="copy the audiobook to iCloud Drive/Audiobooks, to open it on the iPhone")
     ap.add_argument("--min-chars", type=int, default=500, help="skip sections shorter than this (cover, copyright...)")
     ap.add_argument("--no-titles", action="store_true", help="do not read chapter titles aloud")
+    ap.add_argument("--plain", action="store_true", help="read the text exactly as printed, without the reading rules (abbreviations, Roman numerals...)")
     args = ap.parse_args(argv)
 
+    if args.check:
+        print_check((args.lang or "fr").lower())
+        return 0
+    if args.demo:
+        run_demo(args)
+        return 0
     if args.ui or args.book is None:
         return serve_ui(args)
     if not args.book.exists():
@@ -901,7 +1282,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     out_dir = args.out or default_out(book)
     if args.compare:
-        run_compare(book, selection[0], language, args, out_dir, [args.model] if args.model else None)
+        run_compare(sample_of(book, selection[0]), language, args, out_dir, [args.model] if args.model else None)
     elif args.preview:
         run_preview(book, selection[0], language, args, out_dir)
     else:
@@ -990,7 +1371,7 @@ PAGE = r"""<!doctype html>
   audio { width:100%; margin-top:14px; height:36px; } .hide { display:none !important; }
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
 </style></head><body>
-<header><div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="28" height="28" role="img" aria-label="book2audio"><rect x="0.5" y="0.5" width="63" height="63" rx="13" fill="var(--tile)" stroke="var(--tile-line)"/><path d="M13 30 V34 M22 26 V38 M42 26 V38 M51 30 V34" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="28" y="20" width="8" height="24" fill="#8C52EE"/></svg><span class="word">book2audio</span><span class="tag">Ebooks in, audiobooks out. All on this Mac.</span>
+<header><div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="28" height="28" role="img" aria-label="book2audio"><rect x="0.5" y="0.5" width="63" height="63" rx="13" fill="var(--tile)" stroke="var(--tile-line)"/><path d="M13 30 V34 M22 26 V38 M42 26 V38 M51 30 V34" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="28" y="20" width="8" height="24" fill="#8C52EE"/></svg><span class="word">book2audio</span><span class="tag" id="mac">Ebooks in, audiobooks out. All on this Mac.</span>
 <button id="theme" class="ghost" aria-label="Switch between dark and light theme">Light</button>
 <button id="quit" class="ghost" title="Stop book2audio. Everything read so far is kept.">Quit</button></div></header>
 <div id="gone" class="hide"><div class="card" style="max-width:520px;margin:80px auto;text-align:center"><h2>book2audio has quit</h2><p class="sub">Everything read so far is kept, and the queue will be there next time. You can close this tab.</p></div></div>
@@ -1024,7 +1405,7 @@ PAGE = r"""<!doctype html>
   <p class="label">Book</p>
   <h2 id="title"></h2><div id="meta" class="sub mono"></div>
   <div class="row">
-    <div><label for="model">Voice model</label><select id="model"><option value="voxtral-4bit">Natural (Voxtral 4-bit, recommended)</option><option value="voxtral">Natural, full size (Voxtral, 2.5x slower)</option><option value="pocket">Light, on the CPU (Pocket TTS)</option><option value="kokoro">Fast (Kokoro)</option></select></div>
+    <div><label for="model">Voice model</label><select id="model"><option value="voxtral-4bit" data-label="Natural (Voxtral 4-bit)"></option><option value="voxtral" data-label="Natural, full size (Voxtral, slower)"></option><option value="kyutai" data-label="Kyutai TTS (experimental)"></option><option value="pocket" data-label="Light, on the CPU (Pocket TTS)"></option><option value="kokoro" data-label="Fast (Kokoro)"></option></select></div>
     <div><label for="voice">Voice</label><select id="voice"></select></div>
     <label class="check"><input type="checkbox" id="iphone" checked> Copy to iCloud Drive for the iPhone</label>
   </div>
@@ -1045,6 +1426,7 @@ const $ = id => document.getElementById(id);
 const VOX = { fr:["fr_female","fr_male"], en:["casual_female","casual_male","cheerful_female","neutral_female","neutral_male"],
               es:["es_female","es_male"], de:["de_female","de_male"], it:["it_female","it_male"], pt:["pt_female","pt_male"], nl:["nl_female","nl_male"] };
 const VOICES = { voxtral: VOX, "voxtral-4bit": VOX,
+                 kyutai: { fr:["cml-tts/fr/10087_11650_000028-0002_enhanced.wav"], en:["expresso/ex03-ex01_happy_001_channel1_334s.wav"] },
                  pocket: { fr:["estelle"], en:["alba","marius","cosette","jane","george"], de:["juergen"], es:["lola"], it:["giovanni"], pt:["rafael"] },
                  kokoro: { fr:["ff_siwis"], en:["af_heart","af_bella","am_michael","am_adam","bf_emma","bm_george"], es:["ef_dora","em_alex"], it:["if_sara","im_nicola"], pt:["pf_dora"] } };
 const STATUS = { waiting:"waiting", running:"reading now", done:"finished", error:"failed" };
@@ -1068,7 +1450,10 @@ function countSelected() {
 function showBook(b) {
   book = b; $("err").textContent = "";
   $("title").textContent = b.title; $("meta").textContent = [b.author, b.language, b.out].filter(Boolean).join(" · ");
-  $("model").value = b.language.startsWith("fr") ? "voxtral-4bit" : "kokoro"; fillVoices();
+  [...$("model").options].forEach(o => { const fit = (b.fits || {})[o.value] || "fits";
+    o.disabled = fit === "no";
+    o.textContent = o.dataset.label + (o.value === b.recommended ? " · recommended for this Mac" : fit === "no" ? " · too big for this Mac" : fit === "tight" ? " · tight on this Mac" : ""); });
+  $("model").value = b.recommended || "voxtral-4bit"; fillVoices();
   $("chapters").innerHTML = "";
   b.chapters.forEach(c => {
     const row = document.createElement("label"); row.className = "ch" + (c.done ? " done" : "");
@@ -1143,6 +1528,7 @@ function poll() {
   clearTimeout(timer);
   api("/status").then(s => {
     speeds = s.speeds || {}; if (book) countSelected();
+    if (s.machine && s.machine.memory_gb) $("mac").textContent = `Running on this Mac: ${s.machine.chip}, ${s.machine.memory_gb} GB`;
     $("steps").classList.toggle("hide", !!book || s.queue.length > 0);
     showQueue(s);
     $("work").classList.toggle("hide", !s.lines.length);
@@ -1300,7 +1686,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                             "preview": state.preview, "preview_at": state.preview_at, "queue": view,
                             "compare": state.results, "comparing": state.comparing,
                             "segments": state.segments if state.running else [], "now": state.now,
-                            "speeds": load_speeds(),
+                            "speeds": load_speeds(), "machine": {"chip": machine_info()["chip"], "memory_gb": machine_info()["memory_gb"]},
                             "book_done": files_done(session["out"], list(range(1, len(book.chapters) + 1))) if book else []})
             elif url.path == "/audio" and session["out"]:
                 name = Path(parse_qs(url.query).get("f", [""])[0]).name
@@ -1345,6 +1731,8 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     done = files_done(session["out"], everything)
                     self.reply({"title": book.title, "author": book.author, "language": (args.lang or book.language or "en").lower(),
                                 "out": str(session["out"]).replace(str(Path.home()), "~"),
+                                "recommended": recommend((args.lang or book.language or "en").lower())["recommended"],
+                                "fits": {r["model"]: r["fit"] for r in recommend((args.lang or book.language or "en").lower())["models"]},
                                 "chapters": [{"n": n, "title": c.title, "minutes": round(c.chars / 900), "done": n in done,
                                               "skip": is_front_matter(c)}
                                              for n, c in enumerate(book.chapters, 1)]})
@@ -1482,7 +1870,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
             if job["kind"] == "compare":
                 book, opts = session["book"], options(job)
                 first = min(n for n in job.get("chapters", [1]) if 1 <= n <= len(book.chapters))
-                run_compare(book, first, (args.lang or book.language or "en").lower(), opts, session["out"])
+                run_compare(sample_of(book, first), (args.lang or book.language or "en").lower(), opts, session["out"])
             elif job["kind"] == "preview":
                 book, opts = session["book"], options(job)
                 first = min(n for n in job.get("chapters", [1]) if 1 <= n <= len(book.chapters))

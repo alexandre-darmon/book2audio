@@ -11,13 +11,17 @@ One goal: French audiobooks that sound read, made on your own Mac, with an insta
 - Progress per chapter, time left, estimate of the time to create a book
 - "Compare models": same passage, each model, timed on your Mac
 - Install in one command, with ffmpeg included and a double-click launcher
+- Machine check: the app reads the Mac's chip and memory and recommends the models that fit
+- Reading rules for French and English: abbreviations, Roman numerals, ordinals, clock times, dialogue dashes
+- Kyutai TTS 1.6B as an experimental model
+- `--demo`: built-in sample read by each model, with a benchmark file
 
 ## Next
 
-1. **Check the machine, recommend the models.** At first launch, read the Mac's chip and memory, then list the models that fit, with the expected speed of each, on CPU or GPU. Today the app assumes a recent Mac with plenty of memory.
-2. **Proof by ear.** The same public-domain French paragraph read by each model, at the top of the README.
-3. **Better French reading.** Numbers, abbreviations, dialogue dashes and guillemets, footnote marks.
-4. **More voices.** Kyutai TTS 1.6B, built for French and English.
+1. **Finish the benchmark.** Audio samples for each model in the repo, speeds for Kokoro and Kyutai TTS, and results from Macs other than a 32 GB M6. Run `book2audio --demo` and share the BENCHMARK file.
+2. **Confirm Kyutai TTS on a real Mac**, then decide whether it replaces Voxtral 4-bit for French.
+3. **English as good as French.** Compare Kokoro and Voxtral 4-bit by ear on English books.
+4. **Reading rules, round two.** Numbers and dates in full, foreign words, names.
 
 ## Later
 
