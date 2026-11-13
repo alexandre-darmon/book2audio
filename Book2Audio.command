@@ -12,5 +12,4 @@ if ! command -v ffmpeg >/dev/null; then
   echo "Note: ffmpeg is missing, so no audiobook file will be built. Install it with: brew install ffmpeg"
 fi
 
-# caffeinate keeps the Mac awake while a book is being read
-exec caffeinate -i uv run book2audio.py --ui
+exec uv run book2audio.py --ui

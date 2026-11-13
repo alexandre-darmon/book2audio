@@ -17,7 +17,11 @@ Double-click `Book2Audio.command`. A page opens in your browser:
 
 The first launch installs what is missing (uv, Python, the libraries) and downloads the voice model once. After that, models are loaded from the copy on your Mac in `~/.cache/huggingface`, without contacting Hugging Face.
 
-Audio files go to `~/Audiobooks/<book title>/`. You can stop at any time: finished chapters are kept, and the next run continues with the missing ones.
+Audio files go to `~/Audiobooks/<book title>/`, from the page and from the command line alike (`-o` picks another folder).
+
+While a book is being read, the page shows the percentage done and the time left, and the Mac is kept awake. Keep the lid open and the charger plugged in: closing the lid still puts it to sleep.
+
+You can stop at any time, and a crash or a reboot loses nothing: the position is saved after every passage. When you reopen the same book, the page offers "Resume where I left off", which continues the interrupted chapter at the passage where it stopped, with the same voice. The `.m4b` audiobook is rebuilt at the end of each run with every chapter finished so far.
 
 For the audiobook file you also need ffmpeg: `brew install ffmpeg`.
 
@@ -41,8 +45,7 @@ Everything the page does is also available in the terminal:
 ```bash
 uv run book2audio.py book.epub --list             # check the chapters
 uv run book2audio.py book.epub --preview          # 1-minute sample
-uv run book2audio.py book.epub --chapters 4-38 --iphone
-caffeinate -i uv run book2audio.py book.epub      # keep the Mac awake for a long book
+uv run book2audio.py book.epub --chapters 4-38 --iphone   # run it again to resume
 ```
 
 Options: `--model kokoro|voxtral|<hugging face id>`, `--voice`, `--lang fr|en|en-gb`, `--speed 1.1`, `--format mp3`, `--no-titles`, `--no-m4b`, `--min-chars 500`, `-o <folder>`.

@@ -34,6 +34,7 @@ import time
 import webbrowser
 import xml.etree.ElementTree as ET
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -281,8 +282,51 @@ class Report:
     def log(self, message: str) -> None:
         print(message)
 
-    def progress(self, i: int, n: int, minutes: float) -> None:
-        print(f"\r   {i}/{n} passages, {minutes:.1f} min of audio", end="\n" if i == n else "", flush=True)
+    def progress(self, i: int, n: int, minutes: float, tracker: "Tracker | None" = None) -> None:
+        extra = f" | {tracker.percent}% of the job, {tracker.left_text()}" if tracker else ""
+        print(f"\r   {i}/{n} passages, {minutes:.1f} min of audio{extra}   ", end="\n" if i == n else "", flush=True)
+
+
+def fmt_duration(seconds: float) -> str:
+    minutes = int(round(seconds / 60))
+    if minutes < 1:
+        return "1 min"
+    return f"{minutes} min" if minutes < 60 else f"{minutes // 60} h {minutes % 60:02d} min"
+
+
+class Tracker:
+    """Progress of a whole job, counted in characters of text: a few additions per passage, no cost."""
+
+    def __init__(self, total_chars: int):
+        self.total = max(total_chars, 1)
+        self.done = 0          # characters finished, including those found on disk
+        self.read = 0          # characters read aloud in this run
+        self.t0 = 0.0
+
+    def start_clock(self) -> None:
+        self.t0 = self.t0 or time.time()
+
+    def skip(self, chars: int) -> None:
+        self.done += chars
+
+    def add(self, chars: int) -> None:
+        self.done += chars
+        self.read += chars
+
+    @property
+    def percent(self) -> int:
+        return min(100, int(100 * self.done / self.total))
+
+    def seconds_left(self) -> float | None:
+        if not self.t0 or self.read < 400:       # too early to say
+            return None
+        return max(0.0, (self.total - self.done) * (time.time() - self.t0) / self.read)
+
+    def left_text(self) -> str:
+        left = self.seconds_left()
+        if left is None:
+            return "estimating the time left..."
+        return f"about {fmt_duration(left)} left (done around {time.strftime('%H:%M', time.localtime(time.time() + left))})"
 
 
 REPORT = Report()
@@ -341,6 +385,7 @@ class Synth:
             if speed != 1.0:
                 self.kwargs["speed"] = speed
         REPORT.log(f"Loading {model_id} ({', '.join(f'{k}={v}' for k, v in self.kwargs.items())})")
+        self.key = f"{model_id}|{sorted(self.kwargs.items())}"
         self.model = load_local_first(model_id, load_model)
         self.sample_rate = int(getattr(self.model, "sample_rate", 0) or 24000)
 
@@ -354,12 +399,9 @@ class Synth:
         return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
 
 
-def render_chapter(synth, chapter: Chapter, wav_path: Path, read_title: bool, max_chars: int = MAX_CHARS) -> float:
-    """Write one chapter to a WAV file. Returns its duration in seconds."""
-    import numpy as np
-    import soundfile as sf
-
-    script: list[tuple[str, float]] = []             # (text, pause after it)
+def build_script(chapter: Chapter, read_title: bool, max_chars: int = MAX_CHARS) -> list[tuple[str, float]]:
+    """The chapter as a list of (passage to read, silence after it)."""
+    script: list[tuple[str, float]] = []
     if read_title:
         script.append((chapter.title.rstrip(".") + ".", PAUSE_TITLE))
     for paragraph in chapter.paragraphs:
@@ -367,37 +409,93 @@ def render_chapter(synth, chapter: Chapter, wav_path: Path, read_title: bool, ma
         for i, chunk in enumerate(chunks):
             if re.search(r"\w", chunk):              # skip "***" style separators
                 script.append((chunk, PAUSE_PARAGRAPH if i == len(chunks) - 1 else PAUSE_SENTENCE))
+    return script
 
-    out, samples = None, 0
-    try:
-        for i, (text, pause) in enumerate(script, 1):
+
+def script_chars(script: list[tuple[str, float]]) -> int:
+    return sum(len(text) for text, _ in script)
+
+
+def render_chapter(synth, script: list[tuple[str, float]], pcm: Path, tracker: Tracker | None = None, resume: bool = True):
+    """Read one chapter into a raw audio file, passage by passage.
+
+    After every passage the position is saved next to the audio, so an
+    interrupted chapter continues where it stopped instead of starting over.
+    Returns (chapter seconds, seconds read in this run, sample rate)."""
+    import numpy as np
+
+    state_file = pcm.with_suffix(".json")
+    key = f"{getattr(synth, 'key', '')}|{len(script)}|{script_chars(script)}"
+    start, size, rate = 0, 0, 0
+    if resume and pcm.exists() and state_file.exists():
+        try:
+            saved = json.loads(state_file.read_text())
+            if saved["key"] == key and pcm.stat().st_size >= saved["bytes"]:   # same text, same voice
+                start, size, rate = saved["done"], saved["bytes"], saved["rate"]
+        except (ValueError, KeyError, OSError):
+            pass
+    if start:
+        REPORT.log(f"   continuing at passage {start + 1} of {len(script)}")
+        if tracker:
+            tracker.skip(script_chars(script[:start]))
+    new_samples = 0
+    with open(pcm, "r+b" if start else "wb") as out:
+        out.truncate(size)                           # drop a passage that was cut mid-write
+        out.seek(size)
+        for i, (text, pause) in enumerate(script[start:], start + 1):
+            if tracker:
+                tracker.start_clock()
             audio = synth.say(text)
-            if out is None:
-                out = sf.SoundFile(str(wav_path), "w", samplerate=synth.sample_rate, channels=1, subtype="PCM_16")
-            silence = np.zeros(int(pause * synth.sample_rate), dtype=np.float32)
-            out.write(np.clip(audio, -1.0, 1.0))
-            out.write(silence)
-            samples += len(audio) + len(silence)
-            REPORT.progress(i, len(script), samples / synth.sample_rate / 60)
-    finally:
-        if out is not None:
-            out.close()
-    return samples / synth.sample_rate if out is not None else 0.0
+            rate = synth.sample_rate
+            data = np.concatenate([np.clip(audio, -1.0, 1.0), np.zeros(int(pause * rate), dtype=np.float32)])
+            out.write((data * 32767).astype("<i2").tobytes())
+            out.flush()
+            size += 2 * len(data)
+            new_samples += len(data)
+            tmp = state_file.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({"key": key, "done": i, "bytes": size, "rate": rate}))
+            tmp.replace(state_file)
+            if tracker:
+                tracker.add(len(text))
+            REPORT.progress(i, len(script), size / 2 / rate / 60, tracker)
+    if not rate:
+        return 0.0, 0.0, 0
+    return size / 2 / rate, new_samples / rate, rate
 
 
 # --------------------------------------------------------------------------
 # 4. Encode and package
 # --------------------------------------------------------------------------
-def encode(wav: Path, target: Path, tags: dict[str, str]) -> None:
-    if target.suffix == ".wav":
-        shutil.move(wav, target)
-        return
-    codec = ["-c:a", "aac", "-b:a", "64k"] if target.suffix == ".m4a" else ["-c:a", "libmp3lame", "-q:a", "5"]
-    meta = [x for k, v in tags.items() if v for x in ("-metadata", f"{k}={v}")]
+def encode(pcm: Path, rate: int, target: Path, tags: dict[str, str]) -> None:
+    """Raw audio -> final file. The raw file and its saved position are removed once the file is complete."""
     tmp = target.with_name(".tmp-" + target.name)
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav), "-ac", "1", *codec, *meta, str(tmp)], check=True)
+    if target.suffix == ".wav":
+        import numpy as np
+        import soundfile as sf
+
+        sf.write(str(tmp), np.fromfile(pcm, dtype="<i2"), rate, subtype="PCM_16", format="WAV")
+    else:
+        codec = ["-c:a", "aac", "-b:a", "64k"] if target.suffix == ".m4a" else ["-c:a", "libmp3lame", "-q:a", "5"]
+        meta = [x for k, v in tags.items() if v for x in ("-metadata", f"{k}={v}")]
+        fmt = "mp4" if target.suffix == ".m4a" else "mp3"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "s16le", "-ar", str(rate), "-ac", "1", "-i", str(pcm),
+                        *codec, *meta, "-f", fmt, str(tmp)], check=True)
     tmp.replace(target)                              # a half-written file is never left behind
-    wav.unlink()
+    pcm.unlink()
+    pcm.with_suffix(".json").unlink(missing_ok=True)
+
+
+@contextmanager
+def keep_awake():
+    """Stop the Mac from going to sleep while a book is being read (macOS caffeinate)."""
+    proc = None
+    if sys.platform == "darwin" and shutil.which("caffeinate"):
+        proc = subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(os.getpid())])
+    try:
+        yield
+    finally:
+        if proc:
+            proc.terminate()
 
 
 def build_m4b(files: list[tuple[str, Path]], target: Path, book: Book) -> None:
@@ -463,6 +561,14 @@ def make_synth(args, language: str):
     return _synth_cache[key]
 
 
+def default_out(book: Book) -> Path:
+    return Path.home() / "Audiobooks" / safe_name(book.title)
+
+
+def chapter_target(out_dir: Path, n: int, chapter: Chapter, fmt: str) -> Path:
+    return out_dir / f"{n:02d} - {safe_name(chapter.title)}.{fmt}"
+
+
 def run_preview(book: Book, chapter_number: int, language: str, args, out_dir: Path) -> Path:
     """About one minute of one chapter, to judge the voice."""
     fmt = pick_format(args.format)
@@ -475,9 +581,11 @@ def run_preview(book: Book, chapter_number: int, language: str, args, out_dir: P
         if size > 900:
             break
     target = out_dir / f"preview.{fmt}"
-    wav = out_dir / ".tmp-preview.wav"
-    render_chapter(make_synth(args, language), sample, wav, not args.no_titles)
-    encode(wav, target, {"title": "Preview"})
+    pcm = out_dir / ".tmp-preview.pcm"
+    script = build_script(sample, not args.no_titles)
+    synth = make_synth(args, language)
+    _, _, rate = render_chapter(synth, script, pcm, Tracker(script_chars(script)), resume=False)
+    encode(pcm, rate, target, {"title": "Preview"})
     REPORT.log(f"Preview written to {target}")
     return target
 
@@ -485,35 +593,36 @@ def run_preview(book: Book, chapter_number: int, language: str, args, out_dir: P
 def run_book(book: Book, selection: list[int], language: str, args, out_dir: Path) -> None:
     fmt = pick_format(args.format)
     out_dir.mkdir(parents=True, exist_ok=True)
-    synth = None
-    done: list[tuple[str, Path]] = []
+    read_titles = not args.no_titles
+    todo = [n for n in selection if not chapter_target(out_dir, n, book.chapters[n - 1], fmt).exists()]
+    for n in selection:
+        if n not in todo:
+            REPORT.log(f"[{n}/{len(book.chapters)}] {book.chapters[n - 1].title}: already done, skipping")
+    scripts = {n: build_script(book.chapters[n - 1], read_titles) for n in todo}
+    tracker = Tracker(sum(script_chars(s) for s in scripts.values()))
     started = time.time()
     audio_seconds = 0.0
-    for n in selection:
-        chapter = book.chapters[n - 1]
-        target = out_dir / f"{n:02d} - {safe_name(chapter.title)}.{fmt}"
-        if target.exists():
-            REPORT.log(f"[{n}/{len(book.chapters)}] {chapter.title}: already done, skipping")
-            done.append((chapter.title, target))
-            continue
-        synth = synth or make_synth(args, language)
-        REPORT.log(f"[{n}/{len(book.chapters)}] {chapter.title}")
-        wav = out_dir / f".tmp-{n:02d}.wav"
-        try:
-            audio_seconds += render_chapter(synth, chapter, wav, not args.no_titles)
-        except BaseException:
-            wav.unlink(missing_ok=True)          # never leave a half-read chapter behind
-            raise
-        encode(wav, target, {"title": chapter.title, "album": book.title, "artist": book.author, "track": str(n), "genre": "Audiobook"})
-        done.append((chapter.title, target))
+    with keep_awake():
+        synth = make_synth(args, language) if todo else None
+        for n in todo:
+            chapter = book.chapters[n - 1]
+            REPORT.log(f"[{n}/{len(book.chapters)}] {chapter.title}")
+            pcm = out_dir / f".tmp-{n:02d}.pcm"
+            _, seconds, rate = render_chapter(synth, scripts[n], pcm, tracker)
+            audio_seconds += seconds
+            encode(pcm, rate, chapter_target(out_dir, n, chapter, fmt),
+                   {"title": chapter.title, "album": book.title, "artist": book.author, "track": str(n), "genre": "Audiobook"})
 
     elapsed = time.time() - started
     if audio_seconds:
-        REPORT.log(f"Done: {audio_seconds / 60:.0f} min of audio in {elapsed / 60:.0f} min ({audio_seconds / max(elapsed, 1):.1f}x real time).")
-    if not args.no_m4b and fmt == "m4a":
+        REPORT.log(f"Done: {fmt_duration(audio_seconds)} of audio in {fmt_duration(elapsed)} ({audio_seconds / max(elapsed, 1):.1f}x real time).")
+    # The audiobook holds every chapter finished so far, from this run and earlier ones.
+    done = [(c.title, chapter_target(out_dir, n, c, fmt)) for n, c in enumerate(book.chapters, 1)
+            if chapter_target(out_dir, n, c, fmt).exists()]
+    if not args.no_m4b and fmt == "m4a" and done:
         target = out_dir / f"{safe_name(book.title)}.m4b"
         build_m4b(done, target, book)
-        REPORT.log(f"Audiobook written to {target}")
+        REPORT.log(f"Audiobook written to {target} ({len(done)} of {len(book.chapters)} chapters)")
         if args.iphone:
             if ICLOUD.exists():
                 dest = ICLOUD / "Audiobooks"
@@ -542,7 +651,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Turn an ebook into one audio file per chapter, with a local voice model.")
     ap.add_argument("book", type=Path, nargs="?", help="EPUB file (AZW3 / MOBI / AZW work if Calibre is installed and the file has no DRM)")
     ap.add_argument("--ui", action="store_true", help="open the simple web page instead of using the command line")
-    ap.add_argument("-o", "--out", type=Path, help="output folder (default: a folder named after the book, next to it)")
+    ap.add_argument("-o", "--out", type=Path, help="output folder (default: ~/Audiobooks/<book title>)")
     ap.add_argument("--list", action="store_true", help="show the chapters and stop")
     ap.add_argument("--chapters", help='which chapters to read, e.g. "1-3,7" (numbers from --list)')
     ap.add_argument("--preview", action="store_true", help="read only about one minute, to judge the voice")
@@ -574,7 +683,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Selected: {len(selection)} chapters, about {total_chars / 900 / 60:.1f} hours of audio.")
     if args.list:
         return 0
-    out_dir = args.out or args.book.with_suffix("")
+    out_dir = args.out or default_out(book)
     if args.preview:
         run_preview(book, selection[0], language, args, out_dir)
     else:
@@ -623,6 +732,11 @@ PAGE = r"""<!doctype html>
 <input id="file" type="file" accept=".epub,.azw3,.azw,.mobi" class="hide">
 <p id="err"></p>
 
+<div id="resume" class="card hide" style="border-color:var(--accent)">
+  <div id="resumetext"></div>
+  <div class="row"><button id="resumebtn" class="main">Resume where I left off</button></div>
+</div>
+
 <div id="book" class="card hide">
   <h2 id="title"></h2><div id="meta" class="sub" style="margin:0"></div>
   <div class="row">
@@ -641,7 +755,7 @@ PAGE = r"""<!doctype html>
   <audio id="player" controls class="hide"></audio>
 </div>
 
-<div id="work" class="card hide"><strong id="state"></strong><div id="bar"><div></div></div><pre id="log"></pre></div>
+<div id="work" class="card hide"><strong id="state"></strong> <span id="detail" class="sub"></span><div id="bar"><div></div></div><pre id="log"></pre></div>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -673,6 +787,16 @@ function showBook(b) {
     row.querySelector(".t").textContent = c.title; $("chapters").append(row);
   });
   $("book").classList.remove("hide"); countSelected();
+  $("resume").classList.toggle("hide", !b.resume);
+  if (b.resume) $("resumetext").textContent = b.resume.text;
+}
+function resume() {
+  const r = book.resume; if (!r) return;
+  if (r.model) { $("model").value = r.model; fillVoices(); }
+  if (r.voice) $("voice").value = r.voice;
+  $("iphone").checked = r.iphone;
+  document.querySelectorAll("#chapters input").forEach(b => b.checked = r.chapters.includes(+b.value));
+  $("resume").classList.add("hide"); job("book");
 }
 function upload(file) {
   if (!file) return; $("drop").textContent = "Reading " + file.name + "...";
@@ -687,10 +811,11 @@ function job(kind) {
 function poll() {
   api("/status").then(s => {
     $("work").classList.toggle("hide", !s.lines.length);
-    $("state").textContent = s.running ? (s.total ? `Reading: passage ${s.i} of ${s.total} in this chapter` : "Working...") : (s.error ? "Stopped on an error" : "Idle");
-    $("bar").firstElementChild.style.width = s.total ? (100 * s.i / s.total) + "%" : "0";
+    $("state").textContent = s.running ? (s.total ? `${s.percent}% done, ${s.left}` : "Working...") : (s.error ? "Stopped on an error" : "Idle");
+    $("detail").textContent = s.running && s.total ? `Passage ${s.i} of ${s.total} in the current chapter` : "";
+    $("bar").firstElementChild.style.width = s.running ? s.percent + "%" : "0";
     $("log").textContent = s.lines.join("\n") + (s.error ? "\n" + s.error : ""); $("log").scrollTop = 1e9;
-    ["preview","start"].forEach(id => $(id).disabled = s.running); $("stop").classList.toggle("hide", !s.running);
+    ["preview","start","resumebtn"].forEach(id => $(id).disabled = s.running); $("stop").classList.toggle("hide", !s.running);
     if (s.preview && s.preview_at !== lastPreview) { lastPreview = s.preview_at; $("player").src = "/audio?f=" + encodeURIComponent(s.preview) + "&t=" + s.preview_at; $("player").classList.remove("hide"); $("player").play().catch(() => {}); }
     if (book) s.done.forEach(n => { const row = $("chapters").children[n - 1]; if (row) row.classList.add("done"); });
     if (s.running) setTimeout(poll, 1000);
@@ -705,6 +830,7 @@ $("drop").addEventListener("drop", e => upload(e.dataTransfer.files[0]));
 $("model").onchange = fillVoices; $("chapters").onchange = countSelected;
 const setAll = fn => { document.querySelectorAll("#chapters .ch").forEach(r => r.querySelector("input").checked = fn(r)); countSelected(); };
 $("all").onclick = () => setAll(() => true); $("none").onclick = () => setAll(() => false); $("todo").onclick = () => setAll(r => !r.classList.contains("done"));
+$("resumebtn").onclick = resume;
 $("preview").onclick = () => job("preview"); $("start").onclick = () => job("book");
 $("stop").onclick = () => api("/stop", { method:"POST" }).catch(fail);
 $("folder").onclick = () => api("/folder", { method:"POST" }).catch(fail);
@@ -722,14 +848,18 @@ class WebReport(Report):
         self.error = ""
         self.preview = ""
         self.preview_at = 0
+        self.percent = 0
+        self.left = ""
 
     def log(self, message: str) -> None:
         print(message)
         self.lines = (self.lines + [message])[-200:]
         self.i = self.total = 0
 
-    def progress(self, i: int, n: int, minutes: float) -> None:
+    def progress(self, i: int, n: int, minutes: float, tracker: Tracker | None = None) -> None:
         self.i, self.total = i, n
+        if tracker:
+            self.percent, self.left = tracker.percent, tracker.left_text()
         if self.stop:
             raise Stopped()
 
@@ -744,6 +874,26 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
     def chapter_file(n: int):
         out = session["out"]
         return next(iter(out.glob(f"{n:02d} - *.m4a")), None) if out and out.exists() else None
+
+    def resume_info():
+        """What the last job on this book left unfinished, so one click can pick it up again."""
+        book, out = session["book"], session["out"]
+        try:
+            last = json.loads((out / ".last-job.json").read_text())
+        except (OSError, ValueError):
+            return None
+        left = [n for n in last.get("chapters", []) if 1 <= n <= len(book.chapters) and not chapter_file(n)]
+        if not left:
+            return None
+        text = f"Last time you stopped at chapter {left[0]}, \u201c{book.chapters[left[0] - 1].title}\u201d."
+        try:
+            saved = json.loads((out / f".tmp-{left[0]:02d}.json").read_text())
+            total = int(saved["key"].split("|")[-2])
+            text += f" {int(100 * saved['done'] / total)}% of it is already read and kept."
+        except (OSError, ValueError, KeyError, IndexError, ZeroDivisionError):
+            pass
+        text += f" {len(left)} chapter{'s' if len(left) > 1 else ''} left."
+        return {"chapters": left, "model": last.get("model"), "voice": last.get("voice"), "iphone": bool(last.get("iphone")), "text": text}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):          # keep the terminal quiet
@@ -770,7 +920,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 book = session["book"]
                 done = [n for n in range(1, len(book.chapters) + 1) if chapter_file(n)] if book else []
                 self.reply({"running": state.running, "lines": state.lines[-12:], "i": state.i, "total": state.total,
-                            "error": state.error, "preview": state.preview, "preview_at": state.preview_at, "done": done})
+                            "error": state.error, "percent": state.percent, "left": state.left, "preview": state.preview, "preview_at": state.preview_at, "done": done})
             elif url.path == "/audio" and session["out"]:
                 name = Path(parse_qs(url.query).get("f", [""])[0]).name
                 path = session["out"] / name
@@ -808,10 +958,11 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     path = uploads / name
                     path.write_bytes(body)
                     book = open_book(path, args.min_chars)
-                    session["book"], session["out"] = book, Path.home() / "Audiobooks" / safe_name(book.title)
+                    session["book"], session["out"] = book, args.out or default_out(book)
                     state.preview = ""
                     self.reply({"title": book.title, "author": book.author, "language": (args.lang or book.language or "en").lower(),
                                 "out": str(session["out"]).replace(str(Path.home()), "~"),
+                                "resume": resume_info(),
                                 "chapters": [{"n": n, "title": c.title, "minutes": round(c.chars / 900), "done": bool(chapter_file(n))}
                                              for n, c in enumerate(book.chapters, 1)]})
                 elif self.path == "/start":
@@ -820,7 +971,13 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     if not session["book"]:
                         return self.reply({"error": "Choose a book first."}, 400)
                     state.running, state.stop, state.error, state.lines = True, False, "", []
-                    jobs.put(json.loads(body))
+                    state.percent, state.left = 0, ""
+                    job = json.loads(body)
+                    if job.get("kind") == "book":       # remembered for the "resume" button
+                        session["out"].mkdir(parents=True, exist_ok=True)
+                        (session["out"] / ".last-job.json").write_text(json.dumps(
+                            {k: job.get(k) for k in ("chapters", "model", "voice", "iphone")}))
+                    jobs.put(job)
                     self.reply({"ok": True})
                 elif self.path == "/stop":
                     state.stop = True
