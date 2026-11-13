@@ -57,6 +57,7 @@ KOKORO = {
 MODEL_ALIASES = {
     "kokoro": DEFAULT_MODEL,                                   # small and fast, best in English
     "voxtral": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",   # 8 GB, more natural in French, non-commercial licence
+    "voxtral-4bit": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",   # 2.5 GB compressed version, to compare speed and quality
 }
 VOXTRAL = {"fr": "fr_female", "en": "casual_female", "es": "es_female", "de": "de_female",
            "it": "it_female", "pt": "pt_female", "nl": "nl_female", "ar": "ar_male", "hi": "hi_female"}
@@ -658,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lang", help="book language, e.g. en, en-gb, fr (default: read from the book)")
     ap.add_argument("--voice", help="voice name (default: a good voice for the language)")
     ap.add_argument("--speed", type=float, default=1.0, help="reading speed, 1.0 = normal")
-    ap.add_argument("--model", help="kokoro, voxtral, or any mlx-audio TTS model id (default: voxtral for French books, kokoro otherwise)")
+    ap.add_argument("--model", help="kokoro, voxtral, voxtral-4bit, or any mlx-audio TTS model id (default: voxtral for French books, kokoro otherwise)")
     ap.add_argument("--lang-code", help="advanced: language value passed as is to the model")
     ap.add_argument("--format", choices=["m4a", "mp3", "wav"], default="m4a")
     ap.add_argument("--no-m4b", action="store_true", help="do not build the single audiobook file (.m4b with chapter markers)")
@@ -716,31 +717,39 @@ PAGE = r"""<!doctype html>
   button.main { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
   button:disabled { opacity:.45; cursor:default; }
   button:focus-visible, select:focus-visible, #drop:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-  #chapters { max-height:340px; overflow:auto; margin-top:14px; border-top:1px solid var(--line); }
-  .ch { display:flex; gap:10px; padding:7px 2px; border-bottom:1px solid var(--line); align-items:center; }
-  .ch span.t { flex:1; } .ch span.m { color:var(--soft); font-variant-numeric:tabular-nums; font-size:14px; white-space:nowrap; }
+  #chapters { max-height:300px; overflow:auto; margin-top:14px; border-top:1px solid var(--line); }
+  .ch, .q { display:flex; gap:10px; padding:7px 2px; border-bottom:1px solid var(--line); align-items:center; }
+  .ch span.t, .q span.t { flex:1; } .m { color:var(--soft); font-variant-numeric:tabular-nums; font-size:14px; white-space:nowrap; }
   .ch.done span.t::after { content:"  done"; color:var(--accent); font-size:13px; }
-  .links { font-size:14px; margin-top:8px; } .links a { color:var(--accent); cursor:pointer; margin-right:14px; }
+  .q .pos { color:var(--soft); width:1.4em; text-align:right; font-variant-numeric:tabular-nums; }
+  .q.running span.t { font-weight:600; } .q.done span.t { color:var(--soft); } .q.error .m { color:#c0392b; }
+  .links { font-size:14px; margin-top:8px; } .links a, .q a { color:var(--accent); cursor:pointer; margin-right:14px; font-size:14px; }
   #bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; margin:12px 0 8px; } #bar div { height:100%; width:0; background:var(--accent); transition:width .4s; }
   #log { font:13px/1.5 ui-monospace, Menlo, monospace; color:var(--soft); white-space:pre-wrap; max-height:150px; overflow:auto; margin:0; }
   #err { color:#c0392b; } audio { width:100%; margin-top:12px; } .hide { display:none; }
 </style></head><body><main>
 <h1>book2audio</h1>
-<p class="sub">An ebook in, an audiobook out. Everything runs on this Mac.</p>
+<p class="sub">Ebooks in, audiobooks out. Everything runs on this Mac.</p>
+
+<div id="queue" class="card hide">
+  <h2>Queue</h2>
+  <div id="qlist"></div>
+  <div class="row">
+    <button id="qstart" class="main">Start the queue</button>
+    <button id="stop" class="hide">Stop</button>
+    <span id="qnote" class="m"></span>
+  </div>
+  <div id="work" class="hide" style="margin-top:14px"><strong id="state"></strong> <span id="detail" class="m"></span><div id="bar"><div></div></div><pre id="log"></pre></div>
+</div>
 
 <div id="drop" class="card" tabindex="0" role="button">Drop an EPUB here, or click to choose one<br><small>AZW3 and MOBI work if Calibre is installed</small></div>
 <input id="file" type="file" accept=".epub,.azw3,.azw,.mobi" class="hide">
 <p id="err"></p>
 
-<div id="resume" class="card hide" style="border-color:var(--accent)">
-  <div id="resumetext"></div>
-  <div class="row"><button id="resumebtn" class="main">Resume where I left off</button></div>
-</div>
-
 <div id="book" class="card hide">
   <h2 id="title"></h2><div id="meta" class="sub" style="margin:0"></div>
   <div class="row">
-    <div><label for="model">Voice model</label><select id="model"><option value="voxtral">Natural (Voxtral, slower)</option><option value="kokoro">Fast (Kokoro)</option></select></div>
+    <div><label for="model">Voice model</label><select id="model"><option value="voxtral">Natural (Voxtral)</option><option value="voxtral-4bit">Natural, lighter (Voxtral 4-bit)</option><option value="kokoro">Fast (Kokoro)</option></select></div>
     <div><label for="voice">Voice</label><select id="voice"></select></div>
     <div><label><input type="checkbox" id="iphone" checked> Copy to iCloud Drive for the iPhone</label></div>
   </div>
@@ -748,22 +757,22 @@ PAGE = r"""<!doctype html>
   <div id="chapters"></div>
   <div class="row">
     <button id="preview">1-minute preview</button>
-    <button id="start" class="main">Create audiobook</button>
-    <button id="stop" class="hide">Stop</button>
+    <button id="add" class="main">Add to the queue</button>
     <button id="folder">Open folder</button>
   </div>
   <audio id="player" controls class="hide"></audio>
 </div>
-
-<div id="work" class="card hide"><strong id="state"></strong> <span id="detail" class="sub"></span><div id="bar"><div></div></div><pre id="log"></pre></div>
 </main>
 <script>
 const $ = id => document.getElementById(id);
-const VOICES = { voxtral: { fr:["fr_female","fr_male"], en:["casual_female","casual_male","cheerful_female","neutral_female","neutral_male"],
-                            es:["es_female","es_male"], de:["de_female","de_male"], it:["it_female","it_male"], pt:["pt_female","pt_male"], nl:["nl_female","nl_male"] },
-                 kokoro:  { fr:["ff_siwis"], en:["af_heart","af_bella","am_michael","am_adam","bf_emma","bm_george"], es:["ef_dora","em_alex"], it:["if_sara","im_nicola"], pt:["pf_dora"] } };
-let book = null, lastPreview = 0;
+const VOX = { fr:["fr_female","fr_male"], en:["casual_female","casual_male","cheerful_female","neutral_female","neutral_male"],
+              es:["es_female","es_male"], de:["de_female","de_male"], it:["it_female","it_male"], pt:["pt_female","pt_male"], nl:["nl_female","nl_male"] };
+const VOICES = { voxtral: VOX, "voxtral-4bit": VOX,
+                 kokoro: { fr:["ff_siwis"], en:["af_heart","af_bella","am_michael","am_adam","bf_emma","bm_george"], es:["ef_dora","em_alex"], it:["if_sara","im_nicola"], pt:["pf_dora"] } };
+const STATUS = { waiting:"waiting", running:"reading now", done:"finished", error:"failed" };
+let book = null, lastPreview = 0, timer = null;
 const api = (path, opts) => fetch(path, opts).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; });
+const post = (path, data) => api(path, { method:"POST", body:JSON.stringify(data || {}) });
 const fail = e => { $("err").textContent = e.message || e; };
 
 function fillVoices() {
@@ -786,40 +795,50 @@ function showBook(b) {
     row.innerHTML = `<input type="checkbox" value="${c.n}" ${c.done ? "" : "checked"}><span class="t"></span><span class="m">${c.minutes} min</span>`;
     row.querySelector(".t").textContent = c.title; $("chapters").append(row);
   });
-  $("book").classList.remove("hide"); countSelected();
-  $("resume").classList.toggle("hide", !b.resume);
-  if (b.resume) $("resumetext").textContent = b.resume.text;
-}
-function resume() {
-  const r = book.resume; if (!r) return;
-  if (r.model) { $("model").value = r.model; fillVoices(); }
-  if (r.voice) $("voice").value = r.voice;
-  $("iphone").checked = r.iphone;
-  document.querySelectorAll("#chapters input").forEach(b => b.checked = r.chapters.includes(+b.value));
-  $("resume").classList.add("hide"); job("book");
+  $("book").classList.remove("hide"); $("player").classList.add("hide"); countSelected();
 }
 function upload(file) {
   if (!file) return; $("drop").textContent = "Reading " + file.name + "...";
   api("/open", { method:"POST", headers:{ "X-Name": encodeURIComponent(file.name) }, body:file })
     .then(showBook).catch(fail).finally(() => { $("drop").innerHTML = "Drop another book here, or click to choose one"; });
 }
-function job(kind) {
-  const chapters = countSelected(); if (!chapters.length) return fail("Select at least one chapter.");
+function settings() {
+  const chapters = countSelected(); if (!chapters.length) { fail("Select at least one chapter."); return null; }
   $("err").textContent = "";
-  api("/start", { method:"POST", body:JSON.stringify({ kind, chapters, model:$("model").value, voice:$("voice").value, iphone:$("iphone").checked }) }).then(poll).catch(fail);
+  return { chapters, model:$("model").value, voice:$("voice").value, iphone:$("iphone").checked };
+}
+function showQueue(s) {
+  $("queue").classList.toggle("hide", !s.queue.length && !s.lines.length);
+  $("qlist").innerHTML = "";
+  s.queue.forEach((q, i) => {
+    const row = document.createElement("div"); row.className = "q " + q.status;
+    row.innerHTML = `<span class="pos">${i + 1}</span><span class="t"></span><span class="m"></span>` + (q.status === "running" ? "" : `<a>remove</a>`);
+    row.querySelector(".t").textContent = q.title;
+    row.querySelector(".m").textContent = `${q.done} of ${q.chapters} chapters · ${q.status === "error" && q.note ? q.note : STATUS[q.status]}`;
+    const a = row.querySelector("a"); if (a) a.onclick = () => post("/queue/remove", { id:q.id }).then(poll).catch(fail);
+    $("qlist").append(row);
+  });
+  const todo = s.queue.filter(q => q.status === "waiting" || q.status === "error").length;
+  const started = s.queue.some(q => q.done > 0 && q.status !== "done");
+  $("qstart").textContent = started ? "Resume the queue" : "Start the queue";
+  $("qstart").classList.toggle("hide", s.running); $("qstart").disabled = !todo;
+  $("stop").classList.toggle("hide", !s.running);
+  $("qnote").textContent = s.running ? "" : (todo ? `${todo} book${todo > 1 ? "s" : ""} to read` : (s.queue.length ? "Nothing left to read" : ""));
 }
 function poll() {
+  clearTimeout(timer);
   api("/status").then(s => {
+    showQueue(s);
     $("work").classList.toggle("hide", !s.lines.length);
-    $("state").textContent = s.running ? (s.total ? `${s.percent}% done, ${s.left}` : "Working...") : (s.error ? "Stopped on an error" : "Idle");
-    $("detail").textContent = s.running && s.total ? `Passage ${s.i} of ${s.total} in the current chapter` : "";
+    $("state").textContent = s.running ? (s.current ? s.current + ": " : "") + (s.total ? `${s.percent}% done, ${s.left}` : "getting ready...") : (s.error ? "Stopped on an error" : "Idle");
+    $("detail").textContent = s.running && s.total ? `passage ${s.i} of ${s.total} in the current chapter` : "";
     $("bar").firstElementChild.style.width = s.running ? s.percent + "%" : "0";
     $("log").textContent = s.lines.join("\n") + (s.error ? "\n" + s.error : ""); $("log").scrollTop = 1e9;
-    ["preview","start","resumebtn"].forEach(id => $(id).disabled = s.running); $("stop").classList.toggle("hide", !s.running);
+    $("preview").disabled = s.running;
     if (s.preview && s.preview_at !== lastPreview) { lastPreview = s.preview_at; $("player").src = "/audio?f=" + encodeURIComponent(s.preview) + "&t=" + s.preview_at; $("player").classList.remove("hide"); $("player").play().catch(() => {}); }
-    if (book) s.done.forEach(n => { const row = $("chapters").children[n - 1]; if (row) row.classList.add("done"); });
-    if (s.running) setTimeout(poll, 1000);
-  }).catch(() => setTimeout(poll, 3000));
+    if (book && s.book_done) s.book_done.forEach(n => { const row = $("chapters").children[n - 1]; if (row) row.classList.add("done"); });
+    if (s.running) timer = setTimeout(poll, 1000);
+  }).catch(() => { timer = setTimeout(poll, 3000); });
 }
 $("drop").onclick = () => $("file").click();
 $("drop").onkeydown = e => { if (e.key === "Enter" || e.key === " ") $("file").click(); };
@@ -830,13 +849,16 @@ $("drop").addEventListener("drop", e => upload(e.dataTransfer.files[0]));
 $("model").onchange = fillVoices; $("chapters").onchange = countSelected;
 const setAll = fn => { document.querySelectorAll("#chapters .ch").forEach(r => r.querySelector("input").checked = fn(r)); countSelected(); };
 $("all").onclick = () => setAll(() => true); $("none").onclick = () => setAll(() => false); $("todo").onclick = () => setAll(r => !r.classList.contains("done"));
-$("resumebtn").onclick = resume;
-$("preview").onclick = () => job("preview"); $("start").onclick = () => job("book");
-$("stop").onclick = () => api("/stop", { method:"POST" }).catch(fail);
-$("folder").onclick = () => api("/folder", { method:"POST" }).catch(fail);
+$("preview").onclick = () => { const d = settings(); if (d) post("/preview", d).then(poll).catch(fail); };
+$("add").onclick = () => { const d = settings(); if (d) post("/queue/add", d).then(() => { $("book").classList.add("hide"); poll(); window.scrollTo(0, 0); }).catch(fail); };
+$("qstart").onclick = () => post("/queue/start").then(poll).catch(fail);
+$("stop").onclick = () => post("/stop").then(poll).catch(fail);
+$("folder").onclick = () => post("/folder").catch(fail);
 poll();
 </script></body></html>
 """
+
+QUEUE_FILE = Path.home() / "Audiobooks" / ".queue.json"
 
 
 class WebReport(Report):
@@ -850,6 +872,7 @@ class WebReport(Report):
         self.preview_at = 0
         self.percent = 0
         self.left = ""
+        self.current = ""
 
     def log(self, message: str) -> None:
         print(message)
@@ -868,32 +891,37 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
     global REPORT
     state = REPORT = WebReport()
     jobs: queue.Queue = queue.Queue()
-    session: dict = {"book": None, "out": None}
+    session: dict = {"book": None, "out": None, "epub": None}
     uploads = Path(tempfile.mkdtemp(prefix="book2audio-"))
+    lock = threading.Lock()
 
-    def chapter_file(n: int):
-        out = session["out"]
-        return next(iter(out.glob(f"{n:02d} - *.m4a")), None) if out and out.exists() else None
+    # The queue is a small file on disk, rewritten at every change: whatever
+    # happens (Stop, crash, reboot), the next launch finds it as it was.
+    try:
+        items: list[dict] = json.loads(QUEUE_FILE.read_text())
+    except (OSError, ValueError):
+        items = []
+    for item in items:
+        if item.get("status") == "running":          # interrupted last time
+            item["status"] = "waiting"
 
-    def resume_info():
-        """What the last job on this book left unfinished, so one click can pick it up again."""
-        book, out = session["book"], session["out"]
-        try:
-            last = json.loads((out / ".last-job.json").read_text())
-        except (OSError, ValueError):
-            return None
-        left = [n for n in last.get("chapters", []) if 1 <= n <= len(book.chapters) and not chapter_file(n)]
-        if not left:
-            return None
-        text = f"Last time you stopped at chapter {left[0]}, \u201c{book.chapters[left[0] - 1].title}\u201d."
-        try:
-            saved = json.loads((out / f".tmp-{left[0]:02d}.json").read_text())
-            total = int(saved["key"].split("|")[-2])
-            text += f" {int(100 * saved['done'] / total)}% of it is already read and kept."
-        except (OSError, ValueError, KeyError, IndexError, ZeroDivisionError):
-            pass
-        text += f" {len(left)} chapter{'s' if len(left) > 1 else ''} left."
-        return {"chapters": left, "model": last.get("model"), "voice": last.get("voice"), "iphone": bool(last.get("iphone")), "text": text}
+    def save_queue() -> None:
+        QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = QUEUE_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(items, indent=1))
+        tmp.replace(QUEUE_FILE)
+
+    def files_done(out: Path, chapters: list[int]) -> list[int]:
+        return [n for n in chapters if out.exists() and next(iter(out.glob(f"{n:02d} - *.m4a")), None)]
+
+    def options(job: dict):
+        return argparse.Namespace(**{**vars(args), "model": job.get("model") or args.model,
+                                     "voice": job.get("voice") or args.voice, "iphone": bool(job.get("iphone"))})
+
+    def language_for(book: Book, opts) -> str:
+        if "kokoro" in (opts.model or "") and (opts.voice or "").startswith("b"):
+            return "en-gb"
+        return (args.lang or book.language or "en").lower()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):          # keep the terminal quiet
@@ -918,9 +946,13 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 self.wfile.write(body)
             elif url.path == "/status":
                 book = session["book"]
-                done = [n for n in range(1, len(book.chapters) + 1) if chapter_file(n)] if book else []
+                with lock:
+                    view = [{"id": q["id"], "title": q["title"], "status": q["status"], "note": q.get("note", ""),
+                             "chapters": len(q["chapters"]), "done": len(files_done(Path(q["out"]), q["chapters"]))} for q in items]
                 self.reply({"running": state.running, "lines": state.lines[-12:], "i": state.i, "total": state.total,
-                            "error": state.error, "percent": state.percent, "left": state.left, "preview": state.preview, "preview_at": state.preview_at, "done": done})
+                            "error": state.error, "percent": state.percent, "left": state.left, "current": state.current,
+                            "preview": state.preview, "preview_at": state.preview_at, "queue": view,
+                            "book_done": files_done(session["out"], list(range(1, len(book.chapters) + 1))) if book else []})
             elif url.path == "/audio" and session["out"]:
                 name = Path(parse_qs(url.query).get("f", [""])[0]).name
                 path = session["out"] / name
@@ -958,26 +990,58 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     path = uploads / name
                     path.write_bytes(body)
                     book = open_book(path, args.min_chars)
-                    session["book"], session["out"] = book, args.out or default_out(book)
+                    session.update(book=book, out=args.out or default_out(book), epub=path)
                     state.preview = ""
+                    everything = list(range(1, len(book.chapters) + 1))
+                    done = files_done(session["out"], everything)
                     self.reply({"title": book.title, "author": book.author, "language": (args.lang or book.language or "en").lower(),
                                 "out": str(session["out"]).replace(str(Path.home()), "~"),
-                                "resume": resume_info(),
-                                "chapters": [{"n": n, "title": c.title, "minutes": round(c.chars / 900), "done": bool(chapter_file(n))}
+                                "chapters": [{"n": n, "title": c.title, "minutes": round(c.chars / 900), "done": n in done}
                                              for n, c in enumerate(book.chapters, 1)]})
-                elif self.path == "/start":
+                elif self.path == "/preview":
                     if state.running:
                         return self.reply({"error": "Already working. Stop it first."}, 409)
                     if not session["book"]:
                         return self.reply({"error": "Choose a book first."}, 400)
-                    state.running, state.stop, state.error, state.lines = True, False, "", []
+                    state.running, state.stop, state.error, state.lines, state.current = True, False, "", [], "Preview"
                     state.percent, state.left = 0, ""
+                    jobs.put({"kind": "preview", **json.loads(body)})
+                    self.reply({"ok": True})
+                elif self.path == "/queue/add":
+                    book, out = session["book"], session["out"]
+                    if not book:
+                        return self.reply({"error": "Choose a book first."}, 400)
                     job = json.loads(body)
-                    if job.get("kind") == "book":       # remembered for the "resume" button
-                        session["out"].mkdir(parents=True, exist_ok=True)
-                        (session["out"] / ".last-job.json").write_text(json.dumps(
-                            {k: job.get(k) for k in ("chapters", "model", "voice", "iphone")}))
-                    jobs.put(job)
+                    chapters = sorted(n for n in job.get("chapters", []) if 1 <= n <= len(book.chapters))
+                    out.mkdir(parents=True, exist_ok=True)
+                    source = out / (".source" + session["epub"].suffix.lower())   # kept so the queue survives a restart
+                    shutil.copy2(session["epub"], source)
+                    with lock:
+                        if any(q["out"] == str(out) and q["status"] == "running" for q in items):
+                            return self.reply({"error": "This book is being read right now."}, 409)
+                        items[:] = [q for q in items if not (q["out"] == str(out) and q["status"] != "done")]
+                        items.append({"id": str(int(time.time() * 1000)), "title": book.title, "epub": str(source), "out": str(out),
+                                      "chapters": chapters, "model": job.get("model"), "voice": job.get("voice"),
+                                      "iphone": bool(job.get("iphone")), "status": "waiting", "note": ""})
+                        save_queue()
+                    self.reply({"ok": True})
+                elif self.path == "/queue/remove":
+                    wanted = json.loads(body).get("id")
+                    with lock:
+                        items[:] = [q for q in items if q["id"] != wanted or q["status"] == "running"]
+                        save_queue()
+                    self.reply({"ok": True})
+                elif self.path == "/queue/start":
+                    if state.running:
+                        return self.reply({"error": "Already working."}, 409)
+                    with lock:
+                        for q in items:
+                            if q["status"] == "error":       # an explicit start is also a retry
+                                q["status"], q["note"] = "waiting", ""
+                        save_queue()
+                    state.running, state.stop, state.error, state.lines, state.current = True, False, "", [], ""
+                    state.percent, state.left = 0, ""
+                    jobs.put({"kind": "queue"})
                     self.reply({"ok": True})
                 elif self.path == "/stop":
                     state.stop = True
@@ -994,6 +1058,37 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
             except Exception as e:
                 self.reply({"error": f"{type(e).__name__}: {e}"}, 500)
 
+    def run_queue() -> None:
+        """Read the waiting books one after the other, in the order of the list."""
+        while not state.stop:
+            with lock:
+                item = next((q for q in items if q["status"] == "waiting"), None)
+                if not item:
+                    break
+                item["status"] = "running"
+                position = sum(1 for q in items if q["status"] in ("done", "running", "error"))
+                save_queue()
+            state.current = f"Book {position} of {len(items)}, {item['title']}"
+            state.percent, state.left = 0, ""
+            state.log(f"=== {item['title']} ===")
+            status, note = "done", ""
+            try:
+                book = open_book(Path(item["epub"]), args.min_chars)
+                opts = options(item)
+                run_book(book, item["chapters"], language_for(book, opts), opts, Path(item["out"]))
+            except (Stopped, KeyboardInterrupt):
+                status = "waiting"                   # its position is kept: it goes on from there next time
+                raise
+            except BaseException as e:               # one bad book must not block the ones behind it
+                status, note = "error", (str(e) if isinstance(e, SystemExit) else f"{type(e).__name__}: {e}")[:200]
+                state.log(f"Could not finish this book: {note}")
+            finally:
+                with lock:
+                    item["status"], item["note"] = status, note
+                    save_queue()
+        if not state.stop:
+            state.log("The queue is finished.")
+
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
@@ -1006,21 +1101,16 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
         job = jobs.get()
         if job is None:
             break
-        book, out = session["book"], session["out"]
-        opts = argparse.Namespace(**{**vars(args), "model": job.get("model") or args.model, "voice": job.get("voice") or args.voice,
-                                     "iphone": bool(job.get("iphone"))})
-        language = (args.lang or book.language or "en").lower()
-        if "kokoro" in (opts.model or "") and (opts.voice or "").startswith("b"):
-            language = "en-gb"
-        selection = sorted(n for n in job.get("chapters", []) if 1 <= n <= len(book.chapters))
         try:
-            if job.get("kind") == "preview":
-                target = run_preview(book, selection[0], language, opts, out)
+            if job["kind"] == "preview":
+                book, opts = session["book"], options(job)
+                first = min(n for n in job.get("chapters", [1]) if 1 <= n <= len(book.chapters))
+                target = run_preview(book, first, language_for(book, opts), opts, session["out"])
                 state.preview, state.preview_at = target.name, int(time.time())
             else:
-                run_book(book, selection, language, opts, out)
+                run_queue()
         except Stopped:
-            state.log("Stopped. Finished chapters are kept: start again to continue.")
+            state.log("Stopped. Everything read so far is kept: resume the queue to continue.")
         except KeyboardInterrupt:
             raise
         except BaseException as e:

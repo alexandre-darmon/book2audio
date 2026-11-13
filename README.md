@@ -13,7 +13,10 @@ Double-click `Book2Audio.command`. A page opens in your browser:
 
 1. Drop a book on the page.
 2. Click "1-minute preview" to hear the voice.
-3. Tick the chapters you want and click "Create audiobook".
+3. Tick the chapters you want and click "Add to the queue".
+4. Add more books if you like, then click "Start the queue".
+
+Books are read one after the other, in the order of the list, chapters in order. The queue is saved on disk (`~/Audiobooks/.queue.json`) at every change.
 
 The first launch installs what is missing (uv, Python, the libraries) and downloads the voice model once. After that, models are loaded from the copy on your Mac in `~/.cache/huggingface`, without contacting Hugging Face.
 
@@ -21,7 +24,7 @@ Audio files go to `~/Audiobooks/<book title>/`, from the page and from the comma
 
 While a book is being read, the page shows the percentage done and the time left, and the Mac is kept awake. Keep the lid open and the charger plugged in: closing the lid still puts it to sleep.
 
-You can stop at any time, and a crash or a reboot loses nothing: the position is saved after every passage. When you reopen the same book, the page offers "Resume where I left off", which continues the interrupted chapter at the passage where it stopped, with the same voice. The `.m4b` audiobook is rebuilt at the end of each run with every chapter finished so far.
+You can stop at any time, and a crash or a reboot loses nothing: the queue is kept, and the position inside the current chapter is saved after every passage. At the next launch the page shows the queue as it was, and "Resume the queue" continues at the exact passage where it stopped, with the same voice. A book that fails is marked as failed and the next one starts. The `.m4b` audiobook of a book is rebuilt at the end of each run with every chapter finished so far.
 
 For the audiobook file you also need ffmpeg: `brew install ffmpeg`.
 
@@ -33,7 +36,7 @@ Keep "Copy to iCloud Drive for the iPhone" ticked. The `.m4b` lands in `iCloud D
 
 | Book language | Model | Voices |
 |---|---|---|
-| French | Voxtral (Mistral), natural, about real-time speed | `fr_female` (default), `fr_male` |
+| French | Voxtral (Mistral), natural, about real-time speed. A compressed 4-bit version is also offered, to compare speed and quality | `fr_female` (default), `fr_male` |
 | English | Kokoro, small and fast | `af_heart` (default), `af_bella`, `am_michael`, `am_adam`, `bf_emma`, `bm_george` |
 
 Both models can be picked for either language in the page. Voxtral is an 8 GB download and its licence is non-commercial (CC BY-NC 4.0): fine for listening to your own books, not for selling audio.
@@ -48,7 +51,7 @@ uv run book2audio.py book.epub --preview          # 1-minute sample
 uv run book2audio.py book.epub --chapters 4-38 --iphone   # run it again to resume
 ```
 
-Options: `--model kokoro|voxtral|<hugging face id>`, `--voice`, `--lang fr|en|en-gb`, `--speed 1.1`, `--format mp3`, `--no-titles`, `--no-m4b`, `--min-chars 500`, `-o <folder>`.
+Options: `--model kokoro|voxtral|voxtral-4bit|<hugging face id>`, `--voice`, `--lang fr|en|en-gb`, `--speed 1.1`, `--format mp3`, `--no-titles`, `--no-m4b`, `--min-chars 500`, `-o <folder>`.
 
 ## How it works
 
