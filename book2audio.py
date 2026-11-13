@@ -678,6 +678,42 @@ def make_synth(args, language: str):
     return _synth_cache[key]
 
 
+# How fast each model reads, in "times real time". The starting values were measured on a
+# MacBook Pro M6; each real run on this machine replaces them, so estimates become its own.
+DEFAULT_SPEEDS = {"voxtral": 1.05, "voxtral-4bit": 2.7, "pocket": 5.4}
+SPEEDS_FILE = Path.home() / "Audiobooks" / ".speeds.json"
+
+
+def load_speeds() -> dict:
+    try:
+        return {**DEFAULT_SPEEDS, **json.loads(SPEEDS_FILE.read_text())}
+    except (OSError, ValueError):
+        return dict(DEFAULT_SPEEDS)
+
+
+def save_speed(model: str, speed: float) -> None:
+    try:
+        known = json.loads(SPEEDS_FILE.read_text())
+    except (OSError, ValueError):
+        known = {}
+    known[model] = round(speed, 2)
+    try:
+        SPEEDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SPEEDS_FILE.write_text(json.dumps(known))
+    except OSError:
+        pass
+
+
+FRONT_MATTER = re.compile(r"^(copyright|pr[ée]sentation|du m[êe]me auteur|table( des mati[èe]res)?|sommaire|d[ée]dicace|"
+                          r"remerciements|mentions l[ée]gales|couverture|identit[ée]|title page|cover|contents|table of contents|"
+                          r"also by.*|about the author|dedication|acknowledg(e)?ments)$", re.I)
+
+
+def is_front_matter(chapter: Chapter) -> bool:
+    """Short pages nobody wants read aloud: copyright, table of contents, other titles..."""
+    return chapter.chars < 4500 and bool(FRONT_MATTER.match(chapter.title.strip()))
+
+
 def default_out(book: Book) -> Path:
     return Path.home() / "Audiobooks" / safe_name(book.title)
 
@@ -744,6 +780,7 @@ def run_compare(book: Book, chapter_number: int, language: str, args, out_dir: P
             row["compute_s"] = round(time.time() - started, 1)
             row["audio_s"] = round(audio_s, 1)
             row["speed"] = round(audio_s / max(row["compute_s"], 0.1), 2)
+            save_speed(model, row["speed"])
             row["chars_s"] = round(script_chars(script) / max(row["compute_s"], 0.1), 1)
             target = out_dir / f"compare-{model}.{fmt}"
             encode(pcm, rate, target, {"title": f"Compare {row['label']}"})
@@ -792,6 +829,8 @@ def run_book(book: Book, selection: list[int], language: str, args, out_dir: Pat
     elapsed = time.time() - started
     if audio_seconds:
         REPORT.log(f"Done: {fmt_duration(audio_seconds)} of audio in {fmt_duration(elapsed)} ({audio_seconds / max(elapsed, 1):.1f}x real time).")
+        if audio_seconds > 120:                      # long enough to be a fair measure of this machine
+            save_speed(args.model or default_model(language), audio_seconds / max(elapsed, 1))
     # The audiobook holds every chapter finished so far, from this run and earlier ones.
     done = [(c.title, chapter_target(out_dir, n, c, fmt)) for n, c in enumerate(book.chapters, 1)
             if chapter_target(out_dir, n, c, fmt).exists()]
@@ -895,6 +934,12 @@ PAGE = r"""<!doctype html>
   .word { font-weight:600; letter-spacing:-0.02em; font-size:15px; }
   .tag { color:var(--soft); font-size:13px; margin-left:6px; }
   #theme { margin-left:auto; }
+  #steps { list-style:none; counter-reset:s; display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; padding:0; margin:0 0 16px; }
+  #steps li { counter-increment:s; border:1px solid var(--line); border-radius:8px; padding:14px 16px; color:var(--soft); font-size:13px; }
+  #steps li::before { content:counter(s); display:block; font-family:"Geist Mono", "SF Mono", ui-monospace, Menlo, monospace; font-size:12px; color:var(--accent-ink); margin-bottom:6px; }
+  #steps b { display:block; color:var(--ink); font-weight:600; }
+  .tagk { color:var(--faint); font-size:11px; margin-left:8px; border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+  @media (max-width:560px) { #steps { grid-template-columns:1fr; } .tag { display:none; } }
   main { max-width:760px; margin:0 auto; padding:32px 24px 96px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:20px; margin-bottom:16px; }
   .label { font-size:12px; color:var(--soft); letter-spacing:.02em; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
@@ -946,7 +991,9 @@ PAGE = r"""<!doctype html>
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
 </style></head><body>
 <header><div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="28" height="28" role="img" aria-label="book2audio"><rect x="0.5" y="0.5" width="63" height="63" rx="13" fill="var(--tile)" stroke="var(--tile-line)"/><path d="M13 30 V34 M22 26 V38 M42 26 V38 M51 30 V34" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="28" y="20" width="8" height="24" fill="#8C52EE"/></svg><span class="word">book2audio</span><span class="tag">Ebooks in, audiobooks out. All on this Mac.</span>
-<button id="theme" class="ghost" aria-label="Switch between dark and light theme">Light</button></div></header>
+<button id="theme" class="ghost" aria-label="Switch between dark and light theme">Light</button>
+<button id="quit" class="ghost" title="Stop book2audio. Everything read so far is kept.">Quit</button></div></header>
+<div id="gone" class="hide"><div class="card" style="max-width:520px;margin:80px auto;text-align:center"><h2>book2audio has quit</h2><p class="sub">Everything read so far is kept, and the queue will be there next time. You can close this tab.</p></div></div>
 <main>
 
 <div id="queue" class="card hide">
@@ -963,11 +1010,13 @@ PAGE = r"""<!doctype html>
     <div id="bar" role="progressbar" aria-label="Current chapter"><div></div></div>
     <div id="segs" aria-label="Chapters of this book"></div>
     <div class="cap soft"><span id="segnote"></span><span id="detail" class="mono"></span></div>
-    <pre id="log"></pre>
+    <div class="links" style="margin-top:0"><a id="more">Show details</a></div>
+    <pre id="log" class="hide"></pre>
   </div>
 </div>
 
 <div id="drop" class="card" tabindex="0" role="button"><strong>Drop an EPUB here, or click to choose one</strong>AZW3 and MOBI work if Calibre is installed</div>
+<ol id="steps"><li><b>Drop a book</b>EPUB without DRM</li><li><b>Hear the voice</b>A 1-minute preview</li><li><b>Queue it and leave</b>It reads chapter by chapter</li></ol>
 <input id="file" type="file" accept=".epub,.azw3,.azw,.mobi" class="hide">
 <p id="err"></p>
 
@@ -979,7 +1028,7 @@ PAGE = r"""<!doctype html>
     <div><label for="voice">Voice</label><select id="voice"></select></div>
     <label class="check"><input type="checkbox" id="iphone" checked> Copy to iCloud Drive for the iPhone</label>
   </div>
-  <div class="links"><a id="all">Select all</a><a id="none">Select none</a><a id="todo">Only chapters not done</a><span id="total"></span></div>
+  <div class="links"><a id="all">Select all chapters</a><a id="none">Select none</a><a id="todo">Only chapters not done</a><span id="total"></span></div>
   <div id="chapters"></div>
   <div class="row">
     <button id="preview">1-minute preview</button>
@@ -999,7 +1048,7 @@ const VOICES = { voxtral: VOX, "voxtral-4bit": VOX,
                  pocket: { fr:["estelle"], en:["alba","marius","cosette","jane","george"], de:["juergen"], es:["lola"], it:["giovanni"], pt:["rafael"] },
                  kokoro: { fr:["ff_siwis"], en:["af_heart","af_bella","am_michael","am_adam","bf_emma","bm_george"], es:["ef_dora","em_alex"], it:["if_sara","im_nicola"], pt:["pf_dora"] } };
 const STATUS = { waiting:"waiting", running:"reading now", done:"finished", error:"failed" };
-let book = null, lastPreview = 0, timer = null;
+let book = null, lastPreview = 0, timer = null, speeds = {}, quitting = false;
 const api = (path, opts) => fetch(path, opts).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; });
 const post = (path, data) => api(path, { method:"POST", body:JSON.stringify(data || {}) });
 const fail = e => { $("err").textContent = e.message || e; };
@@ -1011,7 +1060,9 @@ function fillVoices() {
 function countSelected() {
   const boxes = [...document.querySelectorAll("#chapters input:checked")];
   const min = boxes.reduce((s, b) => s + book.chapters[b.value - 1].minutes, 0);
-  $("total").textContent = `${boxes.length} chapters, about ${(min / 60).toFixed(1)} h of audio`;
+  const hours = min / 60, speed = speeds[$("model").value];
+  const dur = h => h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : `${h.toFixed(1)} h`;
+  $("total").textContent = `${boxes.length} chapters · ${dur(hours)} of audio` + (speed && boxes.length ? ` · about ${dur(hours / speed)} to create` : "");
   return boxes.map(b => +b.value);
 }
 function showBook(b) {
@@ -1021,10 +1072,12 @@ function showBook(b) {
   $("chapters").innerHTML = "";
   b.chapters.forEach(c => {
     const row = document.createElement("label"); row.className = "ch" + (c.done ? " done" : "");
-    row.innerHTML = `<input type="checkbox" value="${c.n}" ${c.done ? "" : "checked"}><span class="t"></span><span class="m">${c.minutes} min</span>`;
-    row.querySelector(".t").textContent = c.title; $("chapters").append(row);
+    row.innerHTML = `<input type="checkbox" value="${c.n}" ${c.done || c.skip ? "" : "checked"}><span class="t"></span><span class="m">${c.minutes} min</span>`;
+    row.querySelector(".t").textContent = c.title;
+    if (c.skip && !c.done) { const k = document.createElement("span"); k.className = "tagk"; k.textContent = "front matter"; row.querySelector(".t").append(k); }
+    $("chapters").append(row);
   });
-  $("book").classList.remove("hide"); $("player").classList.add("hide"); countSelected();
+  $("book").classList.remove("hide"); $("player").classList.add("hide"); $("steps").classList.add("hide"); countSelected();
 }
 function upload(file) {
   if (!file) return; $("drop").innerHTML = "<strong>Reading the book...</strong>"; $("drop").append(file.name);
@@ -1041,10 +1094,11 @@ function showQueue(s) {
   $("qlist").innerHTML = "";
   s.queue.forEach((q, i) => {
     const row = document.createElement("div"); row.className = "q " + q.status;
-    row.innerHTML = `<span class="pos">${i + 1}</span><span class="t"></span><span class="m"></span>` + (q.status === "running" ? "" : `<a>remove</a>`);
+    row.innerHTML = `<span class="pos">${i + 1}</span><span class="t"></span><span class="m"></span><a class="open">open</a>` + (q.status === "running" ? "" : `<a class="rm">remove</a>`);
     row.querySelector(".t").textContent = q.title;
     row.querySelector(".m").textContent = `${q.done} of ${q.chapters} chapters · ${q.status === "error" && q.note ? q.note : STATUS[q.status]}`;
-    const a = row.querySelector("a"); if (a) a.onclick = () => post("/queue/remove", { id:q.id }).then(poll).catch(fail);
+    row.querySelector(".open").onclick = () => post("/folder", { id:q.id }).catch(fail);
+    const a = row.querySelector(".rm"); if (a) a.onclick = () => post("/queue/remove", { id:q.id }).then(poll).catch(fail);
     $("qlist").append(row);
   });
   const todo = s.queue.filter(q => q.status === "waiting" || q.status === "error").length;
@@ -1088,16 +1142,20 @@ function showCompare(s) {
 function poll() {
   clearTimeout(timer);
   api("/status").then(s => {
+    speeds = s.speeds || {}; if (book) countSelected();
+    $("steps").classList.toggle("hide", !!book || s.queue.length > 0);
     showQueue(s);
     $("work").classList.toggle("hide", !s.lines.length);
     $("state").textContent = s.running ? (s.current ? s.current + ": " : "") + (s.total ? `${s.percent}% done, ${s.left}` : "getting ready...") : (s.error ? "Stopped on an error" : "Idle");
     showProgress(s); showCompare(s);
-    $("log").textContent = s.lines.join("\n") + (s.error ? "\n" + s.error : ""); $("log").scrollTop = 1e9;
+    $("log").textContent = s.lines.join("\n") + (s.error ? "\n" + s.error : "");
+    if (s.error) { $("log").classList.remove("hide"); $("more").textContent = "Hide details"; }   // an error is never hidden
+    $("log").scrollTop = 1e9;
     $("preview").disabled = $("compare").disabled = s.running;
     if (s.preview && s.preview_at !== lastPreview) { lastPreview = s.preview_at; $("player").src = "/audio?f=" + encodeURIComponent(s.preview) + "&t=" + s.preview_at; $("player").classList.remove("hide"); $("player").play().catch(() => {}); }
     if (book && s.book_done) s.book_done.forEach(n => { const row = $("chapters").children[n - 1]; if (row) row.classList.add("done"); });
     if (s.running) timer = setTimeout(poll, 1000);
-  }).catch(() => { timer = setTimeout(poll, 3000); });
+  }).catch(() => { if (quitting) { document.querySelector("main").classList.add("hide"); $("gone").classList.remove("hide"); } else timer = setTimeout(poll, 3000); });
 }
 $("drop").onclick = () => $("file").click();
 $("drop").onkeydown = e => { if (e.key === "Enter" || e.key === " ") $("file").click(); };
@@ -1105,9 +1163,11 @@ $("file").onchange = e => { upload(e.target.files[0]); e.target.value = ""; };  
 ["dragover","dragenter"].forEach(n => $("drop").addEventListener(n, e => { e.preventDefault(); $("drop").classList.add("over"); }));
 ["dragleave","drop"].forEach(n => $("drop").addEventListener(n, e => { e.preventDefault(); $("drop").classList.remove("over"); }));
 $("drop").addEventListener("drop", e => upload(e.dataTransfer.files[0]));
-$("model").onchange = fillVoices; $("chapters").onchange = countSelected;
+$("model").onchange = () => { fillVoices(); countSelected(); }; $("chapters").onchange = countSelected;
+$("more").onclick = () => { const hidden = $("log").classList.toggle("hide"); $("more").textContent = hidden ? "Show details" : "Hide details"; $("log").scrollTop = 1e9; };
+$("quit").onclick = () => { quitting = true; post("/quit").catch(() => {}).finally(() => setTimeout(poll, 1500)); };
 const setAll = fn => { document.querySelectorAll("#chapters .ch").forEach(r => r.querySelector("input").checked = fn(r)); countSelected(); };
-$("all").onclick = () => setAll(() => true); $("none").onclick = () => setAll(() => false); $("todo").onclick = () => setAll(r => !r.classList.contains("done"));
+$("all").onclick = () => setAll(r => !r.querySelector(".tagk")); $("none").onclick = () => setAll(() => false); $("todo").onclick = () => setAll(r => !r.classList.contains("done"));
 $("preview").onclick = () => { const d = settings(); if (d) post("/preview", d).then(poll).catch(fail); };
 $("compare").onclick = () => { const d = settings(); if (d) post("/compare", d).then(poll).catch(fail); };
 $("add").onclick = () => { const d = settings(); if (d) post("/queue/add", d).then(() => { $("book").classList.add("hide"); poll(); window.scrollTo(0, 0); }).catch(fail); };
@@ -1240,6 +1300,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                             "preview": state.preview, "preview_at": state.preview_at, "queue": view,
                             "compare": state.results, "comparing": state.comparing,
                             "segments": state.segments if state.running else [], "now": state.now,
+                            "speeds": load_speeds(),
                             "book_done": files_done(session["out"], list(range(1, len(book.chapters) + 1))) if book else []})
             elif url.path == "/audio" and session["out"]:
                 name = Path(parse_qs(url.query).get("f", [""])[0]).name
@@ -1284,7 +1345,8 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     done = files_done(session["out"], everything)
                     self.reply({"title": book.title, "author": book.author, "language": (args.lang or book.language or "en").lower(),
                                 "out": str(session["out"]).replace(str(Path.home()), "~"),
-                                "chapters": [{"n": n, "title": c.title, "minutes": round(c.chars / 900), "done": n in done}
+                                "chapters": [{"n": n, "title": c.title, "minutes": round(c.chars / 900), "done": n in done,
+                                              "skip": is_front_matter(c)}
                                              for n, c in enumerate(book.chapters, 1)]})
                 elif self.path == "/compare":
                     if state.running:
@@ -1344,9 +1406,16 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     state.stop = True
                     self.reply({"ok": True})
                 elif self.path == "/folder":
-                    if session["out"]:
-                        session["out"].mkdir(parents=True, exist_ok=True)
-                        subprocess.run(["open", str(session["out"])], check=False)
+                    wanted = (json.loads(body) if body else {}).get("id")
+                    with lock:
+                        folder = next((Path(q["out"]) for q in items if q["id"] == wanted), None) if wanted else session["out"]
+                    if folder:
+                        folder.mkdir(parents=True, exist_ok=True)
+                        subprocess.run(["open", str(folder)], check=False)
+                    self.reply({"ok": True})
+                elif self.path == "/quit":
+                    state.stop = True
+                    jobs.put(None)
                     self.reply({"ok": True})
                 else:
                     self.reply({"error": "not found"}, 404)
@@ -1386,9 +1455,20 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
         if not state.stop:
             state.log("The queue is finished.")
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError:
+        try:                                         # already running: just show it
+            import urllib.request
+            json.loads(urllib.request.urlopen(url + "status", timeout=3).read())["queue"]
+        except Exception:
+            sys.exit(f"Port {port} is used by another program, so book2audio cannot start.")
+        print("book2audio is already running: opening its page.")
+        if open_browser:
+            webbrowser.open(url)
+        return 0
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"book2audio is running at {url}  (close this window or press Ctrl+C to quit)")
     if open_browser:
         webbrowser.open(url)

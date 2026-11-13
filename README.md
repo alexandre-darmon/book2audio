@@ -31,11 +31,7 @@ curl -LsSf https://raw.githubusercontent.com/alexandre-darmon/book2audio/main/in
 
 It installs everything book2audio needs, including Python and ffmpeg, without touching the rest of your Mac. Run the same command again to update.
 
-Then open a new Terminal window and type:
-
-```bash
-book2audio
-```
+Then double-click **book2audio** in the Applications folder of your home folder, or type `book2audio` in a new Terminal window.
 
 A page opens in your browser:
 
@@ -43,6 +39,8 @@ A page opens in your browser:
 2. Click "1-minute preview" to hear the voice.
 3. Tick the chapters you want and click "Add to the queue".
 4. Add more books if you like, then click "Start the queue".
+
+Copyright pages, tables of contents and the like are left unticked. The page tells you how long the audio is and about how long it will take to create with the chosen model.
 
 Books are read one after the other, in the order of the list, chapters in order. The queue is saved on disk (`~/Audiobooks/.queue.json`) at every change.
 
@@ -54,7 +52,9 @@ While a book is being read, the page shows the percentage done and the time left
 
 You can stop at any time, and a crash or a reboot loses nothing: the queue is kept, and the position inside the current chapter is saved after every passage. At the next launch the page shows the queue as it was, and "Resume the queue" continues at the exact passage where it stopped, with the same voice. A book that fails is marked as failed and the next one starts. The `.m4b` audiobook of a book is rebuilt at the end of each run with every chapter finished so far.
 
-To remove it: `uv tool uninstall book2audio`. Audio files stay in `~/Audiobooks`, models in `~/.cache/huggingface`.
+To remove it: `uv tool uninstall book2audio` and delete `~/Applications/book2audio.app`. Audio files stay in `~/Audiobooks`, models in `~/.cache/huggingface`.
+
+To stop it, click **Quit** at the top of the page. Starting it twice is harmless: the second time simply reopens the page.
 
 ## Listen on the iPhone
 
@@ -96,6 +96,10 @@ Options: `--model kokoro|voxtral|voxtral-4bit|pocket|<hugging face id>`, `--voic
 ## How it works
 
 One file, `book2audio.py`, in six steps: read the EPUB and its table of contents, cut the text into sentences-sized passages, read each passage with the model through [mlx-audio](https://github.com/Blaizzy/mlx-audio), add short silences between sentences and paragraphs, encode each chapter with ffmpeg, then join the chapters into one `.m4b`.
+
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md). Next up: checking the machine and recommending the models that fit it.
 
 ## Limits
 
