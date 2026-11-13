@@ -2,10 +2,11 @@
 # /// script
 # requires-python = ">=3.10,<3.13"
 # dependencies = [
-#   "mlx-audio",
-#   "misaki[en]",
-#   "mistral-common[audio]",   # needed by Voxtral
+#   "mlx-audio; sys_platform == 'darwin' and platform_machine == 'arm64'",
+#   "misaki[en]; sys_platform == 'darwin' and platform_machine == 'arm64'",
+#   "mistral-common[audio]; sys_platform == 'darwin' and platform_machine == 'arm64'",   # needed by Voxtral
 #   "beautifulsoup4",
+#   "imageio-ffmpeg",          # brings its own ffmpeg, so nothing else has to be installed
 #   "soundfile",
 #   "numpy",
 # ]
@@ -375,8 +376,7 @@ class Synth:
         try:
             from mlx_audio.tts.utils import load_model
         except ImportError:
-            sys.exit("mlx-audio is not installed (it needs an Apple Silicon Mac).\n"
-                     "Run this script with:  uv run book2audio.py ...")
+            sys.exit("The voice models need a Mac with Apple Silicon (M1 or later): mlx-audio is not available here.")
         short = language.split("-")[0]
         model_id = MODEL_ALIASES.get(model_id.lower(), model_id)
         self.kwargs: dict = {}
@@ -479,6 +479,33 @@ def render_chapter(synth, script: list[tuple[str, float]], pcm: Path, tracker: T
 # --------------------------------------------------------------------------
 # 4. Encode and package
 # --------------------------------------------------------------------------
+_ffmpeg: list = []
+
+
+def ffmpeg_exe() -> str | None:
+    """The ffmpeg already on this Mac if there is one, otherwise the copy that comes with the app."""
+    if not _ffmpeg:
+        found = shutil.which("ffmpeg")
+        if not found:
+            try:
+                import imageio_ffmpeg
+                found = imageio_ffmpeg.get_ffmpeg_exe()
+            except Exception:
+                found = None
+        _ffmpeg.append(found)
+    return _ffmpeg[0]
+
+
+def audio_seconds(path: Path) -> float:
+    """Length of an audio file, read from ffmpeg's own description of it."""
+    out = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(path)], capture_output=True, text=True).stderr
+    found = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", out)
+    if not found:
+        raise RuntimeError(f"Could not read the length of {path.name}")
+    h, m, sec = found.groups()
+    return int(h) * 3600 + int(m) * 60 + float(sec)
+
+
 def encode(pcm: Path, rate: int, target: Path, tags: dict[str, str]) -> None:
     """Raw audio -> final file. The raw file and its saved position are removed once the file is complete."""
     tmp = target.with_name(".tmp-" + target.name)
@@ -491,7 +518,7 @@ def encode(pcm: Path, rate: int, target: Path, tags: dict[str, str]) -> None:
         codec = ["-c:a", "aac", "-b:a", "64k"] if target.suffix == ".m4a" else ["-c:a", "libmp3lame", "-q:a", "5"]
         meta = [x for k, v in tags.items() if v for x in ("-metadata", f"{k}={v}")]
         fmt = "mp4" if target.suffix == ".m4a" else "mp3"
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "s16le", "-ar", str(rate), "-ac", "1", "-i", str(pcm),
+        subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "s16le", "-ar", str(rate), "-ac", "1", "-i", str(pcm),
                         *codec, *meta, "-f", fmt, str(tmp)], check=True)
     tmp.replace(target)                              # a half-written file is never left behind
     pcm.unlink()
@@ -522,9 +549,7 @@ def build_m4b(files: list[tuple[str, Path]], target: Path, book: Book) -> None:
         listing = Path(tmp) / "list.txt"
         lines = []
         for title, f in files:
-            probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(f)],
-                                   capture_output=True, text=True, check=True)
-            end = start + int(float(probe.stdout.strip()) * 1000)
+            end = start + int(audio_seconds(f) * 1000)
             meta += ["[CHAPTER]", "TIMEBASE=1/1000", f"START={start}", f"END={end}", f"title={esc(title)}"]
             start = end
             quoted = str(f.resolve()).replace("'", "'\\''")
@@ -532,7 +557,7 @@ def build_m4b(files: list[tuple[str, Path]], target: Path, book: Book) -> None:
         listing.write_text("\n".join(lines), encoding="utf-8")
         meta_file = Path(tmp) / "meta.txt"
         meta_file.write_text("\n".join(meta), encoding="utf-8")
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
+        subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
                         "-i", str(meta_file), "-map_metadata", "1", "-map", "0:a", "-c", "copy", "-f", "mp4", str(target)], check=True)
 
 
@@ -555,7 +580,7 @@ def safe_name(text: str) -> str:
 
 
 def pick_format(wanted: str) -> str:
-    if wanted != "wav" and not shutil.which("ffmpeg"):
+    if wanted != "wav" and not ffmpeg_exe():
         REPORT.log("ffmpeg not found: writing WAV files, no audiobook file (install it with: brew install ffmpeg).")
         return "wav"
     return wanted
@@ -1400,9 +1425,14 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Entry point of the `book2audio` command."""
     try:
         sys.exit(main())
     except KeyboardInterrupt:
         print("\nStopped. Run the same command again to continue where it left off.")
         sys.exit(130)
+
+
+if __name__ == "__main__":
+    cli()

@@ -21,9 +21,23 @@ French and English. No account, no API key, nothing uploaded. Listen on your iPh
 Input: EPUB. AZW3 and MOBI work if Calibre is installed and the file has no DRM.
 Output: one `.m4a` per chapter, plus one `.m4b` audiobook with chapter markers.
 
-## Start
+## Install
 
-Double-click `Book2Audio.command`. A page opens in your browser:
+One command, in the Terminal:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/alexandre-darmon/book2audio/main/install.sh | sh
+```
+
+It installs everything book2audio needs, including Python and ffmpeg, without touching the rest of your Mac. Run the same command again to update.
+
+Then open a new Terminal window and type:
+
+```bash
+book2audio
+```
+
+A page opens in your browser:
 
 1. Drop a book on the page.
 2. Click "1-minute preview" to hear the voice.
@@ -32,7 +46,7 @@ Double-click `Book2Audio.command`. A page opens in your browser:
 
 Books are read one after the other, in the order of the list, chapters in order. The queue is saved on disk (`~/Audiobooks/.queue.json`) at every change.
 
-The first launch installs what is missing (uv, Python, the libraries) and downloads the voice model once. After that, models are loaded from the copy on your Mac in `~/.cache/huggingface`, without contacting Hugging Face.
+The voice model downloads once, the first time you use it. After that, models are loaded from the copy on your Mac in `~/.cache/huggingface`, without contacting Hugging Face.
 
 Audio files go to `~/Audiobooks/<book title>/`, from the page and from the command line alike (`-o` picks another folder).
 
@@ -40,7 +54,7 @@ While a book is being read, the page shows the percentage done and the time left
 
 You can stop at any time, and a crash or a reboot loses nothing: the queue is kept, and the position inside the current chapter is saved after every passage. At the next launch the page shows the queue as it was, and "Resume the queue" continues at the exact passage where it stopped, with the same voice. A book that fails is marked as failed and the next one starts. The `.m4b` audiobook of a book is rebuilt at the end of each run with every chapter finished so far.
 
-For the audiobook file you also need ffmpeg: `brew install ffmpeg`.
+To remove it: `uv tool uninstall book2audio`. Audio files stay in `~/Audiobooks`, models in `~/.cache/huggingface`.
 
 ## Listen on the iPhone
 
@@ -55,7 +69,7 @@ Keep "Copy to iCloud Drive for the iPhone" ticked. The `.m4b` lands in `iCloud D
 
 A third option, Pocket TTS (Kyutai), runs on the CPU. It installs itself in a separate environment the first time you pick it.
 
-**Compare models.** The "Compare models" button reads the same one-minute passage with each model and shows, for each, the audio to listen to and its measured speed on your Mac. From the terminal: `uv run book2audio.py book.epub --compare`.
+**Compare models.** The "Compare models" button reads the same one-minute passage with each model and shows, for each, the audio to listen to and its measured speed on your Mac. From the terminal: `book2audio book.epub --compare`.
 
 Measured on a MacBook Pro M6, 32 GB, on one minute of French text:
 
@@ -69,12 +83,12 @@ All models can be picked for either language in the page. Voxtral 4-bit is a 2.5
 
 ## Command line
 
-Everything the page does is also available in the terminal:
+Everything the page does is also available in the terminal. If you cloned the repo instead of installing, replace `book2audio` with `uv run book2audio.py`, or double-click `Book2Audio.command`.
 
 ```bash
-uv run book2audio.py book.epub --list             # check the chapters
-uv run book2audio.py book.epub --preview          # 1-minute sample
-uv run book2audio.py book.epub --chapters 4-38 --iphone   # run it again to resume
+book2audio book.epub --list             # check the chapters
+book2audio book.epub --preview          # 1-minute sample
+book2audio book.epub --chapters 4-38 --iphone   # run it again to resume
 ```
 
 Options: `--model kokoro|voxtral|voxtral-4bit|pocket|<hugging face id>`, `--voice`, `--lang fr|en|en-gb`, `--speed 1.1`, `--format mp3`, `--no-titles`, `--no-m4b`, `--min-chars 500`, `-o <folder>`.

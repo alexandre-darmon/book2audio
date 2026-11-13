@@ -1,0 +1,29 @@
+[project]
+name = "book2audio"
+version = "0.1.0"
+description = "Turn an EPUB into a chaptered audiobook on a Mac, with a voice model that runs locally"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+# Keep this list identical to the one at the top of book2audio.py.
+dependencies = [
+  "mlx-audio; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "misaki[en]; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "mistral-common[audio]; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "beautifulsoup4",
+  "imageio-ffmpeg",
+  "soundfile",
+  "numpy",
+]
+
+[project.urls]
+Repository = "https://github.com/alexandre-darmon/book2audio"
+
+[project.scripts]
+book2audio = "book2audio:cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["book2audio"]
