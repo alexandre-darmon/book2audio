@@ -13,8 +13,8 @@ French and English. No account, no API key, nothing uploaded. Listen on your iPh
 
 ## Why book2audio?
 
-- **French that sounds read, not synthesized.** French books use Voxtral, English books use Kokoro. You pick the voice and hear a 1-minute preview first.
-- **It uses the Mac's GPU.** Models run through MLX on Apple Silicon. On a MacBook Pro M6 with 32 GB, Voxtral reads at about real-time speed: 9 minutes of audio in 9 minutes.
+- **French that sounds read, not synthesized.** French books use Voxtral (4-bit), English books use Kokoro. You pick the voice and hear a 1-minute preview first.
+- **It uses the Mac's GPU.** Models run through MLX on Apple Silicon. On a MacBook Pro M6 with 32 GB, the default French model reads 2.7 times faster than real time: 82 seconds of audio in 30 seconds.
 - **A 28-hour book survives interruptions.** The position is saved after every passage. Stop, crash or reboot, then resume at the same sentence.
 - **Queue several books and leave.** They are read one after the other. The queue is kept on disk.
 
@@ -50,14 +50,22 @@ Keep "Copy to iCloud Drive for the iPhone" ticked. The `.m4b` lands in `iCloud D
 
 | Book language | Model | Voices |
 |---|---|---|
-| French | Voxtral (Mistral), natural, about real-time speed. A compressed 4-bit version is also offered, to compare speed and quality | `fr_female` (default), `fr_male` |
+| French | Voxtral 4-bit (Mistral), natural, 2.7x real time. The full-size model is also offered: same voices, about 2.5x slower | `fr_female` (default), `fr_male` |
 | English | Kokoro, small and fast | `af_heart` (default), `af_bella`, `am_michael`, `am_adam`, `bf_emma`, `bm_george` |
 
 A third option, Pocket TTS (Kyutai), runs on the CPU. It installs itself in a separate environment the first time you pick it.
 
 **Compare models.** The "Compare models" button reads the same one-minute passage with each model and shows, for each, the audio to listen to and its measured speed on your Mac. From the terminal: `uv run book2audio.py book.epub --compare`.
 
-All models can be picked for either language in the page. Voxtral is an 8 GB download and its licence is non-commercial (CC BY-NC 4.0): fine for listening to your own books, not for selling audio.
+Measured on a MacBook Pro M6, 32 GB, on one minute of French text:
+
+| Model | Speed | Characters per second |
+|---|---|---|
+| Voxtral, full size | 1.05x real time | 18.7 |
+| Voxtral 4-bit | 2.71x | 46.5 |
+| Pocket TTS (CPU) | 5.38x | 104.1 |
+
+All models can be picked for either language in the page. Voxtral 4-bit is a 2.5 GB download (8 GB for the full size) and its licence is non-commercial (CC BY-NC 4.0): fine for listening to your own books, not for selling audio.
 
 ## Command line
 

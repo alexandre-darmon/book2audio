@@ -56,8 +56,8 @@ KOKORO = {
 }
 MODEL_ALIASES = {
     "kokoro": DEFAULT_MODEL,                                   # small and fast, best in English
-    "voxtral": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",   # 8 GB, more natural in French, non-commercial licence
-    "voxtral-4bit": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",   # 2.5 GB compressed version, to compare speed and quality
+    "voxtral": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",   # 8 GB, natural in French, non-commercial licence
+    "voxtral-4bit": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",   # 2.5 GB, same voices, about 2.5x faster: default for French
 }
 VOXTRAL = {"fr": "fr_female", "en": "casual_female", "es": "es_female", "de": "de_female",
            "it": "it_female", "pt": "pt_female", "nl": "nl_female", "ar": "ar_male", "hi": "hi_female"}
@@ -335,6 +335,8 @@ class Tracker:
 
     def left_text(self) -> str:
         left = self.seconds_left()
+        if self.done >= self.total:
+            return "finishing"
         if left is None:
             return "estimating the time left..."
         return f"about {fmt_duration(left)} left (done around {time.strftime('%H:%M', time.localtime(time.time() + left))})"
@@ -625,7 +627,9 @@ _synth_cache: dict = {}
 
 
 def default_model(language: str) -> str:
-    return "voxtral" if language.startswith("fr") else "kokoro"
+    # French: the 4-bit Voxtral measured 2.7x real time on a MacBook Pro M6, against 1.05x for the
+    # full model, with a voice judged just as good by ear.
+    return "voxtral-4bit" if language.startswith("fr") else "kokoro"
 
 
 def make_synth(args, language: str):
@@ -806,7 +810,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lang", help="book language, e.g. en, en-gb, fr (default: read from the book)")
     ap.add_argument("--voice", help="voice name (default: a good voice for the language)")
     ap.add_argument("--speed", type=float, default=1.0, help="reading speed, 1.0 = normal")
-    ap.add_argument("--model", help="kokoro, voxtral, voxtral-4bit, pocket, or any mlx-audio TTS model id (default: voxtral for French books, kokoro otherwise)")
+    ap.add_argument("--model", help="kokoro, voxtral, voxtral-4bit, pocket, or any mlx-audio TTS model id (default: voxtral-4bit for French books, kokoro otherwise)")
     ap.add_argument("--lang-code", help="advanced: language value passed as is to the model")
     ap.add_argument("--format", choices=["m4a", "mp3", "wav"], default="m4a")
     ap.add_argument("--no-m4b", action="store_true", help="do not build the single audiobook file (.m4b with chapter markers)")
@@ -946,7 +950,7 @@ PAGE = r"""<!doctype html>
   <p class="label">Book</p>
   <h2 id="title"></h2><div id="meta" class="sub mono"></div>
   <div class="row">
-    <div><label for="model">Voice model</label><select id="model"><option value="voxtral">Natural (Voxtral)</option><option value="voxtral-4bit">Natural, lighter (Voxtral 4-bit)</option><option value="pocket">Light, on the CPU (Pocket TTS)</option><option value="kokoro">Fast (Kokoro)</option></select></div>
+    <div><label for="model">Voice model</label><select id="model"><option value="voxtral-4bit">Natural (Voxtral 4-bit, recommended)</option><option value="voxtral">Natural, full size (Voxtral, 2.5x slower)</option><option value="pocket">Light, on the CPU (Pocket TTS)</option><option value="kokoro">Fast (Kokoro)</option></select></div>
     <div><label for="voice">Voice</label><select id="voice"></select></div>
     <label class="check"><input type="checkbox" id="iphone" checked> Copy to iCloud Drive for the iPhone</label>
   </div>
@@ -988,7 +992,7 @@ function countSelected() {
 function showBook(b) {
   book = b; $("err").textContent = "";
   $("title").textContent = b.title; $("meta").textContent = [b.author, b.language, b.out].filter(Boolean).join(" · ");
-  $("model").value = b.language.startsWith("fr") ? "voxtral" : "kokoro"; fillVoices();
+  $("model").value = b.language.startsWith("fr") ? "voxtral-4bit" : "kokoro"; fillVoices();
   $("chapters").innerHTML = "";
   b.chapters.forEach(c => {
     const row = document.createElement("label"); row.className = "ch" + (c.done ? " done" : "");
