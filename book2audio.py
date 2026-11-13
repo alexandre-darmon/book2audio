@@ -288,6 +288,13 @@ class Report:
         print(f"\r   {i}/{n} passages, {minutes:.1f} min of audio{extra}   ", end="\n" if i == n else "", flush=True)
 
 
+    def plan(self, chapters: list[dict]) -> None:
+        """Called once per book with its chapters: {n, title, chars, done}."""
+
+    def chapter(self, n: int, finished: bool = False) -> None:
+        """Called when a chapter starts, and again when it is finished."""
+
+
 def fmt_duration(seconds: float) -> str:
     minutes = int(round(seconds / 60))
     if minutes < 1:
@@ -600,6 +607,8 @@ def run_book(book: Book, selection: list[int], language: str, args, out_dir: Pat
         if n not in todo:
             REPORT.log(f"[{n}/{len(book.chapters)}] {book.chapters[n - 1].title}: already done, skipping")
     scripts = {n: build_script(book.chapters[n - 1], read_titles) for n in todo}
+    REPORT.plan([{"n": n, "title": book.chapters[n - 1].title, "chars": book.chapters[n - 1].chars, "done": n not in todo}
+                 for n in selection])
     tracker = Tracker(sum(script_chars(s) for s in scripts.values()))
     started = time.time()
     audio_seconds = 0.0
@@ -608,11 +617,13 @@ def run_book(book: Book, selection: list[int], language: str, args, out_dir: Pat
         for n in todo:
             chapter = book.chapters[n - 1]
             REPORT.log(f"[{n}/{len(book.chapters)}] {chapter.title}")
+            REPORT.chapter(n)
             pcm = out_dir / f".tmp-{n:02d}.pcm"
             _, seconds, rate = render_chapter(synth, scripts[n], pcm, tracker)
             audio_seconds += seconds
             encode(pcm, rate, chapter_target(out_dir, n, chapter, fmt),
                    {"title": chapter.title, "album": book.title, "artist": book.author, "track": str(n), "genre": "Audiobook"})
+            REPORT.chapter(n, finished=True)
 
     elapsed = time.time() - started
     if audio_seconds:
@@ -751,8 +762,14 @@ PAGE = r"""<!doctype html>
   .links a, .q a { color:var(--accent-ink); cursor:pointer; font-size:12px; } .links a:hover, .q a:hover { text-decoration:underline; }
   #total { color:var(--soft); margin-left:auto; font-size:12px; }
   #work { margin-top:16px; border-top:1px solid var(--line); padding-top:16px; }
-  #state { font-weight:600; font-size:13px; } #detail { margin-left:6px; }
-  #bar { height:4px; background:var(--line); border-radius:2px; overflow:hidden; margin:10px 0 12px; } #bar div { height:100%; width:0; background:var(--accent); transition:width .4s; }
+  #state { font-weight:600; font-size:13px; margin-bottom:14px; }
+  .cap { display:flex; justify-content:space-between; gap:12px; font-size:13px; } .cap span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cap.soft { font-size:12px; color:var(--soft); margin-bottom:14px; } #chpct { font-size:13px; }
+  #bar { height:10px; background:var(--line); border-radius:3px; overflow:hidden; margin:8px 0 10px; } #bar div { height:100%; width:0; background:var(--accent); transition:width .4s; }
+  #segs { display:flex; gap:2px; height:6px; margin-bottom:8px; }
+  #segs div { flex:1 1 0; min-width:3px; background:var(--line); border-radius:1px; overflow:hidden; }
+  #segs i { display:block; height:100%; width:0; background:var(--accent); transition:width .4s; }
+  #segs div.now { outline:1px solid var(--accent-ink); outline-offset:1px; }
   #log { font-size:12px; line-height:1.6; color:var(--soft); white-space:pre-wrap; max-height:140px; overflow:auto; margin:0; }
   #err { color:var(--danger); font-size:13px; min-height:0; margin:0 0 12px; } #err:empty { display:none; }
   audio { width:100%; margin-top:14px; height:36px; } .hide { display:none !important; }
@@ -770,7 +787,14 @@ PAGE = r"""<!doctype html>
     <button id="stop" class="hide">Stop</button>
     <span id="qnote" class="m"></span>
   </div>
-  <div id="work" class="hide" style="margin-top:14px"><strong id="state"></strong> <span id="detail" class="m"></span><div id="bar"><div></div></div><pre id="log"></pre></div>
+  <div id="work" class="hide">
+    <div id="state"></div>
+    <div class="cap"><span id="chname"></span><span id="chpct" class="mono"></span></div>
+    <div id="bar" role="progressbar" aria-label="Current chapter"><div></div></div>
+    <div id="segs" aria-label="Chapters of this book"></div>
+    <div class="cap soft"><span id="segnote"></span><span id="detail" class="mono"></span></div>
+    <pre id="log"></pre>
+  </div>
 </div>
 
 <div id="drop" class="card" tabindex="0" role="button"><strong>Drop an EPUB here, or click to choose one</strong>AZW3 and MOBI work if Calibre is installed</div>
@@ -857,14 +881,27 @@ function showQueue(s) {
   $("stop").classList.toggle("hide", !s.running);
   $("qnote").textContent = s.running ? "" : (todo ? `${todo} book${todo > 1 ? "s" : ""} to read` : (s.queue.length ? "Nothing left to read" : ""));
 }
+function showProgress(s) {
+  const segs = s.running ? s.segments : [], now = segs.find(g => g.n === s.now);
+  const pct = s.running && s.total ? Math.floor(100 * s.i / s.total) : 0;
+  $("chname").textContent = now ? now.title : (s.running && s.total ? "Preview" : "");
+  $("chpct").textContent = s.running && s.total ? pct + "%" : "";
+  $("bar").firstElementChild.style.width = pct + "%";
+  $("detail").textContent = s.running && s.total ? `passage ${s.i} of ${s.total}` : "";
+  const box = $("segs"); box.classList.toggle("hide", !segs.length);
+  if (box.children.length !== segs.length) box.innerHTML = segs.map(() => "<div><i></i></div>").join("");
+  segs.forEach((g, k) => { const d = box.children[k];
+    d.style.flexGrow = g.w; d.className = g.n === s.now ? "now" : ""; d.title = `${g.title}: ${g.p}%`; d.firstChild.style.width = g.p + "%"; });
+  const done = segs.filter(g => g.p === 100).length;
+  $("segnote").textContent = segs.length ? `${done} of ${segs.length} chapters done` : "";
+}
 function poll() {
   clearTimeout(timer);
   api("/status").then(s => {
     showQueue(s);
     $("work").classList.toggle("hide", !s.lines.length);
     $("state").textContent = s.running ? (s.current ? s.current + ": " : "") + (s.total ? `${s.percent}% done, ${s.left}` : "getting ready...") : (s.error ? "Stopped on an error" : "Idle");
-    $("detail").textContent = s.running && s.total ? `passage ${s.i} of ${s.total} in the current chapter` : "";
-    $("bar").firstElementChild.style.width = s.running ? s.percent + "%" : "0";
+    showProgress(s);
     $("log").textContent = s.lines.join("\n") + (s.error ? "\n" + s.error : ""); $("log").scrollTop = 1e9;
     $("preview").disabled = s.running;
     if (s.preview && s.preview_at !== lastPreview) { lastPreview = s.preview_at; $("player").src = "/audio?f=" + encodeURIComponent(s.preview) + "&t=" + s.preview_at; $("player").classList.remove("hide"); $("player").play().catch(() => {}); }
@@ -909,14 +946,28 @@ class WebReport(Report):
         self.percent = 0
         self.left = ""
         self.current = ""
+        self.segments: list[dict] = []     # one per chapter of the book being read
+        self.now = 0                       # number of the chapter being read
 
     def log(self, message: str) -> None:
         print(message)
         self.lines = (self.lines + [message])[-200:]
-        self.i = self.total = 0
+
+    def plan(self, chapters: list[dict]) -> None:
+        self.segments = [{"n": c["n"], "title": c["title"], "w": max(c["chars"], 1), "p": 100 if c["done"] else 0} for c in chapters]
+        self.now, self.i, self.total = 0, 0, 0
+
+    def chapter(self, n: int, finished: bool = False) -> None:
+        self.now, self.i, self.total = n, 0, 0
+        for seg in self.segments:
+            if seg["n"] == n:
+                seg["p"] = 100 if finished else 0
 
     def progress(self, i: int, n: int, minutes: float, tracker: Tracker | None = None) -> None:
         self.i, self.total = i, n
+        for seg in self.segments:
+            if seg["n"] == self.now:
+                seg["p"] = min(99, int(100 * i / n))     # 100 only once the file is written
         if tracker:
             self.percent, self.left = tracker.percent, tracker.left_text()
         if self.stop:
@@ -988,6 +1039,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 self.reply({"running": state.running, "lines": state.lines[-12:], "i": state.i, "total": state.total,
                             "error": state.error, "percent": state.percent, "left": state.left, "current": state.current,
                             "preview": state.preview, "preview_at": state.preview_at, "queue": view,
+                            "segments": state.segments if state.running else [], "now": state.now,
                             "book_done": files_done(session["out"], list(range(1, len(book.chapters) + 1))) if book else []})
             elif url.path == "/audio" and session["out"]:
                 name = Path(parse_qs(url.query).get("f", [""])[0]).name
@@ -1040,7 +1092,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     if not session["book"]:
                         return self.reply({"error": "Choose a book first."}, 400)
                     state.running, state.stop, state.error, state.lines, state.current = True, False, "", [], "Preview"
-                    state.percent, state.left = 0, ""
+                    state.percent, state.left, state.segments, state.now = 0, "", [], 0
                     jobs.put({"kind": "preview", **json.loads(body)})
                     self.reply({"ok": True})
                 elif self.path == "/queue/add":
@@ -1105,7 +1157,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 position = sum(1 for q in items if q["status"] in ("done", "running", "error"))
                 save_queue()
             state.current = f"Book {position} of {len(items)}, {item['title']}"
-            state.percent, state.left = 0, ""
+            state.percent, state.left, state.segments, state.now = 0, "", [], 0
             state.log(f"=== {item['title']} ===")
             status, note = "done", ""
             try:
