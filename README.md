@@ -53,7 +53,11 @@ Keep "Copy to iCloud Drive for the iPhone" ticked. The `.m4b` lands in `iCloud D
 | French | Voxtral (Mistral), natural, about real-time speed. A compressed 4-bit version is also offered, to compare speed and quality | `fr_female` (default), `fr_male` |
 | English | Kokoro, small and fast | `af_heart` (default), `af_bella`, `am_michael`, `am_adam`, `bf_emma`, `bm_george` |
 
-Both models can be picked for either language in the page. Voxtral is an 8 GB download and its licence is non-commercial (CC BY-NC 4.0): fine for listening to your own books, not for selling audio.
+A third option, Pocket TTS (Kyutai), runs on the CPU. It installs itself in a separate environment the first time you pick it.
+
+**Compare models.** The "Compare models" button reads the same one-minute passage with each model and shows, for each, the audio to listen to and its measured speed on your Mac. From the terminal: `uv run book2audio.py book.epub --compare`.
+
+All models can be picked for either language in the page. Voxtral is an 8 GB download and its licence is non-commercial (CC BY-NC 4.0): fine for listening to your own books, not for selling audio.
 
 ## Command line
 
@@ -65,7 +69,7 @@ uv run book2audio.py book.epub --preview          # 1-minute sample
 uv run book2audio.py book.epub --chapters 4-38 --iphone   # run it again to resume
 ```
 
-Options: `--model kokoro|voxtral|voxtral-4bit|<hugging face id>`, `--voice`, `--lang fr|en|en-gb`, `--speed 1.1`, `--format mp3`, `--no-titles`, `--no-m4b`, `--min-chars 500`, `-o <folder>`.
+Options: `--model kokoro|voxtral|voxtral-4bit|pocket|<hugging face id>`, `--voice`, `--lang fr|en|en-gb`, `--speed 1.1`, `--format mp3`, `--no-titles`, `--no-m4b`, `--min-chars 500`, `-o <folder>`.
 
 ## How it works
 

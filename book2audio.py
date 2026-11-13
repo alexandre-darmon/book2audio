@@ -294,6 +294,9 @@ class Report:
     def chapter(self, n: int, finished: bool = False) -> None:
         """Called when a chapter starts, and again when it is finished."""
 
+    def compare(self, results: list[dict], running: str) -> None:
+        """Called as a model comparison moves on."""
+
 
 def fmt_duration(seconds: float) -> str:
     minutes = int(round(seconds / 60))
@@ -556,16 +559,93 @@ def pick_format(wanted: str) -> str:
     return wanted
 
 
+# Pocket TTS (Kyutai) runs on the CPU and needs PyTorch. To keep its libraries from
+# ever clashing with the main ones, it runs in its own small process with its own
+# environment, created by uv on first use. Text goes in, raw audio comes back.
+POCKET = {"fr": ("french_24l", "estelle"), "en": ("english", "alba"), "de": ("german_24l", "juergen"),
+          "es": ("spanish_24l", "lola"), "it": ("italian_24l", "giovanni"), "pt": ("portuguese_24l", "rafael")}
+POCKET_WORKER = r"""
+import json, os, sys
+proto = os.fdopen(os.dup(1), "wb")      # keep the real output for audio...
+os.dup2(2, 1)                           # ...and send anything the libraries print to the log
+from pocket_tts import TTSModel
+model = TTSModel.load_model(language=sys.argv[1])
+voice = model.get_state_for_audio_prompt(sys.argv[2])
+proto.write((json.dumps({"rate": int(model.sample_rate)}) + "\n").encode()); proto.flush()
+for line in sys.stdin:
+    audio = model.generate_audio(voice, json.loads(line)["text"]).detach().cpu().numpy().astype("<f4").reshape(-1)
+    proto.write((json.dumps({"samples": int(audio.size)}) + "\n").encode()); proto.write(audio.tobytes()); proto.flush()
+"""
+
+
+class PocketSynth:
+    def __init__(self, language: str, voice: str | None):
+        uv = shutil.which("uv")
+        if not uv:
+            sys.exit("Pocket TTS needs uv to install itself (https://docs.astral.sh/uv/).")
+        short = language.split("-")[0]
+        name, default_voice = POCKET.get(short) or POCKET["en"]
+        voice = voice or default_voice
+        self.key = f"pocket|{name}|{voice}"
+        self._dir = tempfile.mkdtemp(prefix="book2audio-pocket-")
+        script = Path(self._dir) / "worker.py"
+        script.write_text(POCKET_WORKER)
+        REPORT.log(f"Loading Pocket TTS ({name}, voice={voice}). The first use installs it and downloads the model.")
+        self.proc = subprocess.Popen([uv, "run", "--no-project", "--python", "3.12", "--with", "pocket-tts",
+                                      "python", "-u", str(script), name, voice], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.sample_rate = int(self._header()["rate"])
+
+    def _header(self) -> dict:
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError("Pocket TTS stopped. The reason is in the Terminal window, just above.")
+        return json.loads(line)
+
+    def say(self, text: str):
+        import numpy as np
+
+        self.proc.stdin.write((json.dumps({"text": text}) + "\n").encode())
+        self.proc.stdin.flush()
+        size = 4 * int(self._header()["samples"])
+        data = b""
+        while len(data) < size:
+            part = self.proc.stdout.read(size - len(data))
+            if not part:
+                raise RuntimeError("Pocket TTS stopped in the middle of a passage.")
+            data += part
+        return np.frombuffer(data, dtype="<f4").copy()
+
+    def close(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.kill()
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+
 _synth_cache: dict = {}
 
 
+def default_model(language: str) -> str:
+    return "voxtral" if language.startswith("fr") else "kokoro"
+
+
 def make_synth(args, language: str):
-    """The model stays loaded between two jobs that use the same voice."""
-    model = args.model or ("voxtral" if language.startswith("fr") else "kokoro")
+    """The model stays loaded between two jobs that use the same voice. Only one is kept in memory."""
+    model = args.model or default_model(language)
     key = (model, language, args.voice, args.speed, args.lang_code)
     if key not in _synth_cache:
+        for old in _synth_cache.values():
+            if hasattr(old, "close"):
+                old.close()
         _synth_cache.clear()
-        _synth_cache[key] = Synth(model, language, args.voice, args.speed, args.lang_code)
+        import gc
+        gc.collect()                                 # give the previous model's memory back first
+        try:
+            import mlx.core as mx
+            mx.clear_cache()
+        except Exception:
+            pass
+        _synth_cache[key] = (PocketSynth(language, args.voice) if model.lower() == "pocket"
+                             else Synth(model, language, args.voice, args.speed, args.lang_code))
     return _synth_cache[key]
 
 
@@ -596,6 +676,61 @@ def run_preview(book: Book, chapter_number: int, language: str, args, out_dir: P
     encode(pcm, rate, target, {"title": "Preview"})
     REPORT.log(f"Preview written to {target}")
     return target
+
+
+MODEL_LABELS = {"voxtral": "Voxtral", "voxtral-4bit": "Voxtral 4-bit", "kokoro": "Kokoro", "pocket": "Pocket TTS"}
+
+
+def compare_list(language: str) -> list[str]:
+    return ["voxtral", "voxtral-4bit", "pocket"] if language.startswith("fr") else ["kokoro", "voxtral", "pocket"]
+
+
+def run_compare(book: Book, chapter_number: int, language: str, args, out_dir: Path, models: list[str] | None = None) -> list[dict]:
+    """Read the same one-minute passage with several models, and time each one on this machine."""
+    fmt = pick_format(args.format)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    first = book.chapters[chapter_number - 1]
+    sample, size = Chapter(first.title), 0
+    for p in first.paragraphs:
+        sample.paragraphs.append(p)
+        size += len(p)
+        if size > 900:
+            break
+    script = build_script(sample, not args.no_titles)
+    results: list[dict] = []
+    for model in models or compare_list(language):
+        row = {"model": model, "label": MODEL_LABELS.get(model, model), "file": "", "error": ""}
+        results.append(row)
+        REPORT.compare(results, model)
+        REPORT.log(f"=== {row['label']} ===")
+        try:
+            opts = argparse.Namespace(**{**vars(args), "model": model, "voice": None})
+            lang = "en" if model == "kokoro" and language.startswith("en") else language
+            started = time.time()
+            synth = make_synth(opts, lang)
+            row["load_s"] = round(time.time() - started, 1)
+            pcm = out_dir / f".tmp-compare-{model}.pcm"
+            started = time.time()
+            audio_s, _, rate = render_chapter(synth, script, pcm, Tracker(script_chars(script)), resume=False)
+            row["compute_s"] = round(time.time() - started, 1)
+            row["audio_s"] = round(audio_s, 1)
+            row["speed"] = round(audio_s / max(row["compute_s"], 0.1), 2)
+            row["chars_s"] = round(script_chars(script) / max(row["compute_s"], 0.1), 1)
+            target = out_dir / f"compare-{model}.{fmt}"
+            encode(pcm, rate, target, {"title": f"Compare {row['label']}"})
+            row["file"] = target.name
+            REPORT.log(f"{row['label']}: {row['audio_s']} s of audio in {row['compute_s']} s = {row['speed']}x real time "
+                       f"({row['chars_s']} characters per second), model loaded in {row['load_s']} s")
+        except Stopped:
+            raise
+        except KeyboardInterrupt:
+            raise
+        except BaseException as e:                   # one model failing must not hide the others
+            row["error"] = (str(e) if isinstance(e, SystemExit) else f"{type(e).__name__}: {e}")[:300]
+            REPORT.log(f"{row['label']} failed: {row['error']}")
+        REPORT.compare(results, "")
+    REPORT.log(f"Listen to the compare-*.{fmt} files in {out_dir}")
+    return results
 
 
 def run_book(book: Book, selection: list[int], language: str, args, out_dir: Path) -> None:
@@ -667,10 +802,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--list", action="store_true", help="show the chapters and stop")
     ap.add_argument("--chapters", help='which chapters to read, e.g. "1-3,7" (numbers from --list)')
     ap.add_argument("--preview", action="store_true", help="read only about one minute, to judge the voice")
+    ap.add_argument("--compare", action="store_true", help="read the same minute with each model and time them on this machine")
     ap.add_argument("--lang", help="book language, e.g. en, en-gb, fr (default: read from the book)")
     ap.add_argument("--voice", help="voice name (default: a good voice for the language)")
     ap.add_argument("--speed", type=float, default=1.0, help="reading speed, 1.0 = normal")
-    ap.add_argument("--model", help="kokoro, voxtral, voxtral-4bit, or any mlx-audio TTS model id (default: voxtral for French books, kokoro otherwise)")
+    ap.add_argument("--model", help="kokoro, voxtral, voxtral-4bit, pocket, or any mlx-audio TTS model id (default: voxtral for French books, kokoro otherwise)")
     ap.add_argument("--lang-code", help="advanced: language value passed as is to the model")
     ap.add_argument("--format", choices=["m4a", "mp3", "wav"], default="m4a")
     ap.add_argument("--no-m4b", action="store_true", help="do not build the single audiobook file (.m4b with chapter markers)")
@@ -696,7 +832,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         return 0
     out_dir = args.out or default_out(book)
-    if args.preview:
+    if args.compare:
+        run_compare(book, selection[0], language, args, out_dir, [args.model] if args.model else None)
+    elif args.preview:
         run_preview(book, selection[0], language, args, out_dir)
     else:
         run_book(book, selection, language, args, out_dir)
@@ -761,6 +899,9 @@ PAGE = r"""<!doctype html>
   .links { font-size:12px; margin-top:16px; display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
   .links a, .q a { color:var(--accent-ink); cursor:pointer; font-size:12px; } .links a:hover, .q a:hover { text-decoration:underline; }
   #total { color:var(--soft); margin-left:auto; font-size:12px; }
+  #cmprows { border:1px solid var(--line); border-radius:6px; background:var(--bg); }
+  .c { display:grid; grid-template-columns:130px 1fr; gap:4px 14px; padding:12px; border-bottom:1px solid var(--line); align-items:center; font-size:13px; }
+  .c:last-child { border-bottom:0; } .c b { font-weight:600; } .c audio { margin:0; height:32px; } .c .m { white-space:normal; } .c .bad { color:var(--danger); }
   #work { margin-top:16px; border-top:1px solid var(--line); padding-top:16px; }
   #state { font-weight:600; font-size:13px; margin-bottom:14px; }
   .cap { display:flex; justify-content:space-between; gap:12px; font-size:13px; } .cap span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -805,7 +946,7 @@ PAGE = r"""<!doctype html>
   <p class="label">Book</p>
   <h2 id="title"></h2><div id="meta" class="sub mono"></div>
   <div class="row">
-    <div><label for="model">Voice model</label><select id="model"><option value="voxtral">Natural (Voxtral)</option><option value="voxtral-4bit">Natural, lighter (Voxtral 4-bit)</option><option value="kokoro">Fast (Kokoro)</option></select></div>
+    <div><label for="model">Voice model</label><select id="model"><option value="voxtral">Natural (Voxtral)</option><option value="voxtral-4bit">Natural, lighter (Voxtral 4-bit)</option><option value="pocket">Light, on the CPU (Pocket TTS)</option><option value="kokoro">Fast (Kokoro)</option></select></div>
     <div><label for="voice">Voice</label><select id="voice"></select></div>
     <label class="check"><input type="checkbox" id="iphone" checked> Copy to iCloud Drive for the iPhone</label>
   </div>
@@ -813,10 +954,12 @@ PAGE = r"""<!doctype html>
   <div id="chapters"></div>
   <div class="row">
     <button id="preview">1-minute preview</button>
+    <button id="compare">Compare models</button>
     <button id="add" class="main">Add to the queue</button>
     <button id="folder" class="ghost">Open folder</button>
   </div>
   <audio id="player" controls class="hide"></audio>
+  <div id="cmp" class="hide"><p class="label" style="margin-top:20px">Same passage, each model, timed on this Mac</p><div id="cmprows"></div></div>
 </div>
 </main>
 <script>
@@ -824,6 +967,7 @@ const $ = id => document.getElementById(id);
 const VOX = { fr:["fr_female","fr_male"], en:["casual_female","casual_male","cheerful_female","neutral_female","neutral_male"],
               es:["es_female","es_male"], de:["de_female","de_male"], it:["it_female","it_male"], pt:["pt_female","pt_male"], nl:["nl_female","nl_male"] };
 const VOICES = { voxtral: VOX, "voxtral-4bit": VOX,
+                 pocket: { fr:["estelle"], en:["alba","marius","cosette","jane","george"], de:["juergen"], es:["lola"], it:["giovanni"], pt:["rafael"] },
                  kokoro: { fr:["ff_siwis"], en:["af_heart","af_bella","am_michael","am_adam","bf_emma","bm_george"], es:["ef_dora","em_alex"], it:["if_sara","im_nicola"], pt:["pf_dora"] } };
 const STATUS = { waiting:"waiting", running:"reading now", done:"finished", error:"failed" };
 let book = null, lastPreview = 0, timer = null;
@@ -895,15 +1039,32 @@ function showProgress(s) {
   const done = segs.filter(g => g.p === 100).length;
   $("segnote").textContent = segs.length ? `${done} of ${segs.length} chapters done` : "";
 }
+let cmpSeen = "";
+function showCompare(s) {
+  const rows = s.compare || []; $("cmp").classList.toggle("hide", !rows.length);
+  const sig = JSON.stringify(rows) + s.comparing; if (sig === cmpSeen) return; cmpSeen = sig;   // do not restart players that are playing
+  $("cmprows").innerHTML = "";
+  rows.forEach(r => {
+    const d = document.createElement("div"); d.className = "c";
+    const waiting = !r.file && !r.error;
+    d.innerHTML = `<b></b><span class="m"></span>` + (r.file ? `<span></span><audio controls preload="none" src="/audio?f=${encodeURIComponent(r.file)}&t=${Date.now()}"></audio>` : "");
+    d.querySelector("b").textContent = r.label;
+    const m = d.querySelector(".m");
+    if (r.error) { m.textContent = "failed: " + r.error; m.classList.add("bad"); }
+    else if (waiting) m.textContent = s.comparing === r.model ? "reading..." : "waiting";
+    else m.textContent = `${r.speed}x real time · ${r.audio_s} s of audio in ${r.compute_s} s · ${r.chars_s} characters/s · loaded in ${r.load_s} s`;
+    $("cmprows").append(d);
+  });
+}
 function poll() {
   clearTimeout(timer);
   api("/status").then(s => {
     showQueue(s);
     $("work").classList.toggle("hide", !s.lines.length);
     $("state").textContent = s.running ? (s.current ? s.current + ": " : "") + (s.total ? `${s.percent}% done, ${s.left}` : "getting ready...") : (s.error ? "Stopped on an error" : "Idle");
-    showProgress(s);
+    showProgress(s); showCompare(s);
     $("log").textContent = s.lines.join("\n") + (s.error ? "\n" + s.error : ""); $("log").scrollTop = 1e9;
-    $("preview").disabled = s.running;
+    $("preview").disabled = $("compare").disabled = s.running;
     if (s.preview && s.preview_at !== lastPreview) { lastPreview = s.preview_at; $("player").src = "/audio?f=" + encodeURIComponent(s.preview) + "&t=" + s.preview_at; $("player").classList.remove("hide"); $("player").play().catch(() => {}); }
     if (book && s.book_done) s.book_done.forEach(n => { const row = $("chapters").children[n - 1]; if (row) row.classList.add("done"); });
     if (s.running) timer = setTimeout(poll, 1000);
@@ -919,6 +1080,7 @@ $("model").onchange = fillVoices; $("chapters").onchange = countSelected;
 const setAll = fn => { document.querySelectorAll("#chapters .ch").forEach(r => r.querySelector("input").checked = fn(r)); countSelected(); };
 $("all").onclick = () => setAll(() => true); $("none").onclick = () => setAll(() => false); $("todo").onclick = () => setAll(r => !r.classList.contains("done"));
 $("preview").onclick = () => { const d = settings(); if (d) post("/preview", d).then(poll).catch(fail); };
+$("compare").onclick = () => { const d = settings(); if (d) post("/compare", d).then(poll).catch(fail); };
 $("add").onclick = () => { const d = settings(); if (d) post("/queue/add", d).then(() => { $("book").classList.add("hide"); poll(); window.scrollTo(0, 0); }).catch(fail); };
 $("qstart").onclick = () => post("/queue/start").then(poll).catch(fail);
 $("stop").onclick = () => post("/stop").then(poll).catch(fail);
@@ -946,6 +1108,8 @@ class WebReport(Report):
         self.percent = 0
         self.left = ""
         self.current = ""
+        self.results: list[dict] = []      # model comparison, shown under the book
+        self.comparing = ""
         self.segments: list[dict] = []     # one per chapter of the book being read
         self.now = 0                       # number of the chapter being read
 
@@ -956,6 +1120,12 @@ class WebReport(Report):
     def plan(self, chapters: list[dict]) -> None:
         self.segments = [{"n": c["n"], "title": c["title"], "w": max(c["chars"], 1), "p": 100 if c["done"] else 0} for c in chapters]
         self.now, self.i, self.total = 0, 0, 0
+
+    def compare(self, results: list[dict], running: str) -> None:
+        self.results, self.comparing = [dict(r) for r in results], running
+        self.i = self.total = 0
+        if running:
+            self.current = f"Comparing models, {MODEL_LABELS.get(running, running)}"
 
     def chapter(self, n: int, finished: bool = False) -> None:
         self.now, self.i, self.total = n, 0, 0
@@ -1039,6 +1209,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 self.reply({"running": state.running, "lines": state.lines[-12:], "i": state.i, "total": state.total,
                             "error": state.error, "percent": state.percent, "left": state.left, "current": state.current,
                             "preview": state.preview, "preview_at": state.preview_at, "queue": view,
+                            "compare": state.results, "comparing": state.comparing,
                             "segments": state.segments if state.running else [], "now": state.now,
                             "book_done": files_done(session["out"], list(range(1, len(book.chapters) + 1))) if book else []})
             elif url.path == "/audio" and session["out"]:
@@ -1079,13 +1250,22 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     path.write_bytes(body)
                     book = open_book(path, args.min_chars)
                     session.update(book=book, out=args.out or default_out(book), epub=path)
-                    state.preview = ""
+                    state.preview, state.results = "", []
                     everything = list(range(1, len(book.chapters) + 1))
                     done = files_done(session["out"], everything)
                     self.reply({"title": book.title, "author": book.author, "language": (args.lang or book.language or "en").lower(),
                                 "out": str(session["out"]).replace(str(Path.home()), "~"),
                                 "chapters": [{"n": n, "title": c.title, "minutes": round(c.chars / 900), "done": n in done}
                                              for n, c in enumerate(book.chapters, 1)]})
+                elif self.path == "/compare":
+                    if state.running:
+                        return self.reply({"error": "Already working. Stop it first."}, 409)
+                    if not session["book"]:
+                        return self.reply({"error": "Choose a book first."}, 400)
+                    state.running, state.stop, state.error, state.lines, state.current = True, False, "", [], "Comparing models"
+                    state.percent, state.left, state.segments, state.now, state.results = 0, "", [], 0, []
+                    jobs.put({"kind": "compare", **json.loads(body)})
+                    self.reply({"ok": True})
                 elif self.path == "/preview":
                     if state.running:
                         return self.reply({"error": "Already working. Stop it first."}, 409)
@@ -1190,7 +1370,11 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
         if job is None:
             break
         try:
-            if job["kind"] == "preview":
+            if job["kind"] == "compare":
+                book, opts = session["book"], options(job)
+                first = min(n for n in job.get("chapters", [1]) if 1 <= n <= len(book.chapters))
+                run_compare(book, first, (args.lang or book.language or "en").lower(), opts, session["out"])
+            elif job["kind"] == "preview":
                 book, opts = session["book"], options(job)
                 first = min(n for n in job.get("chapters", [1]) if 1 <= n <= len(book.chapters))
                 target = run_preview(book, first, language_for(book, opts), opts, session["out"])
