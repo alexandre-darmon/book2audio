@@ -1,2 +1,0 @@
-[console_scripts]
-book2audio = book2audio:cli
