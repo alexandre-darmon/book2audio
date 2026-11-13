@@ -1,0 +1,12 @@
+# Books and generated audio never go in the repo
+*.epub
+*.azw
+*.azw3
+*.mobi
+*.m4a
+*.m4b
+*.mp3
+*.wav
+.DS_Store
+__pycache__/
+.venv/
