@@ -1,11 +1,25 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/book2audio-mark-dark.svg">
+    <img src="assets/book2audio-mark-light.svg" width="72" alt="book2audio">
+  </picture>
+</p>
+
 # book2audio
 
-Turns an ebook into an audiobook, chapter by chapter, with a voice model that runs on your Mac. Nothing leaves the machine.
+**Turn an EPUB into a chaptered audiobook on your Mac, with a voice model that runs locally.**
 
-- Input: EPUB. AZW3 and MOBI work if Calibre is installed and the file has no DRM.
-- Output: one `.m4a` per chapter, plus one `.m4b` audiobook with chapter markers.
-- Languages: French and English out of the box, picked from the book.
-- Needs an Apple Silicon Mac.
+French and English. No account, no API key, nothing uploaded. Listen on your iPhone.
+
+## Why book2audio?
+
+- **French that sounds read, not synthesized.** French books use Voxtral, English books use Kokoro. You pick the voice and hear a 1-minute preview first.
+- **It uses the Mac's GPU.** Models run through MLX on Apple Silicon. On a MacBook Pro M6 with 32 GB, Voxtral reads at about real-time speed: 9 minutes of audio in 9 minutes.
+- **A 28-hour book survives interruptions.** The position is saved after every passage. Stop, crash or reboot, then resume at the same sentence.
+- **Queue several books and leave.** They are read one after the other. The queue is kept on disk.
+
+Input: EPUB. AZW3 and MOBI work if Calibre is installed and the file has no DRM.
+Output: one `.m4a` per chapter, plus one `.m4b` audiobook with chapter markers.
 
 ## Start
 

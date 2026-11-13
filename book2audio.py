@@ -697,42 +697,73 @@ def main(argv: list[str] | None = None) -> int:
 # --------------------------------------------------------------------------
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>book2audio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='.5' y='.5' width='63' height='63' rx='13' fill='%23111113' stroke='%2326262B'/%3E%3Cpath d='M17 35V41M30 29V41' fill='none' stroke='%23F7F7F7' stroke-width='6' stroke-linecap='square'/%3E%3Crect x='42' y='20' width='9' height='24' fill='%238C52EE'/%3E%3C/svg%3E">
+<script>try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { --ink:#1c1b19; --soft:#6b675f; --line:#e2ddd3; --paper:#faf8f4; --card:#fff; --accent:#b4532a; }
-  @media (prefers-color-scheme: dark) { :root { --ink:#ece8df; --soft:#a09a8e; --line:#3a3731; --paper:#191816; --card:#22201d; --accent:#e08a5c; } }
+  :root { color-scheme: dark;
+    --bg:#0a0a0c; --panel:#111113; --raise:#17171a; --line:#232327; --ink:#ededef; --soft:#8b8b93; --faint:#5c5c66;
+    --accent:#8C52EE; --accent-ink:#b392f5; --tile:#111113; --tile-line:#26262B; --glyph:#F7F7F7; --danger:#f2777a; }
+  :root[data-theme="light"] { color-scheme: light;
+    --bg:#ffffff; --panel:#fafafa; --raise:#f4f4f5; --line:#E3E3E3; --ink:#0A0A0A; --soft:#62626b; --faint:#9a9aa3;
+    --accent:#8C52EE; --accent-ink:#7a3fe0; --tile:#F7F7F7; --tile-line:#E3E3E3; --glyph:#0A0A0A; --danger:#c62f33; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.5 -apple-system, "Helvetica Neue", sans-serif; }
-  main { max-width:720px; margin:0 auto; padding:40px 20px 80px; }
-  h1 { font:600 28px/1.2 "Iowan Old Style", Georgia, serif; margin:0 0 4px; }
-  .sub { color:var(--soft); margin:0 0 28px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:16px; }
-  #drop { border:2px dashed var(--line); text-align:center; padding:36px 20px; cursor:pointer; color:var(--soft); }
-  #drop.over { border-color:var(--accent); color:var(--ink); }
-  h2 { font:600 20px/1.3 "Iowan Old Style", Georgia, serif; margin:0; }
-  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:end; margin-top:14px; }
-  label { font-size:13px; color:var(--soft); display:block; }
-  select { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--ink); margin-top:2px; }
-  button { font:inherit; padding:8px 16px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
-  button.main { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
-  button:disabled { opacity:.45; cursor:default; }
-  button:focus-visible, select:focus-visible, #drop:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-  #chapters { max-height:300px; overflow:auto; margin-top:14px; border-top:1px solid var(--line); }
-  .ch, .q { display:flex; gap:10px; padding:7px 2px; border-bottom:1px solid var(--line); align-items:center; }
-  .ch span.t, .q span.t { flex:1; } .m { color:var(--soft); font-variant-numeric:tabular-nums; font-size:14px; white-space:nowrap; }
-  .ch.done span.t::after { content:"  done"; color:var(--accent); font-size:13px; }
-  .q .pos { color:var(--soft); width:1.4em; text-align:right; font-variant-numeric:tabular-nums; }
-  .q.running span.t { font-weight:600; } .q.done span.t { color:var(--soft); } .q.error .m { color:#c0392b; }
-  .links { font-size:14px; margin-top:8px; } .links a, .q a { color:var(--accent); cursor:pointer; margin-right:14px; font-size:14px; }
-  #bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; margin:12px 0 8px; } #bar div { height:100%; width:0; background:var(--accent); transition:width .4s; }
-  #log { font:13px/1.5 ui-monospace, Menlo, monospace; color:var(--soft); white-space:pre-wrap; max-height:150px; overflow:auto; margin:0; }
-  #err { color:#c0392b; } audio { width:100%; margin-top:12px; } .hide { display:none; }
-</style></head><body><main>
-<h1>book2audio</h1>
-<p class="sub">Ebooks in, audiobooks out. Everything runs on this Mac.</p>
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.55 Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+         -webkit-font-smoothing:antialiased; font-feature-settings:"cv11","ss01"; }
+  .mono, .m, #log, .pos, #total { font-family:"Geist Mono", "SF Mono", ui-monospace, Menlo, monospace; font-variant-numeric:tabular-nums; }
+  header { border-bottom:1px solid var(--line); }
+  header > div { max-width:760px; margin:0 auto; padding:14px 24px; display:flex; align-items:center; gap:10px; }
+  header svg { display:block; }
+  .word { font-weight:600; letter-spacing:-0.02em; font-size:15px; }
+  .tag { color:var(--soft); font-size:13px; margin-left:6px; }
+  #theme { margin-left:auto; }
+  main { max-width:760px; margin:0 auto; padding:32px 24px 96px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:20px; margin-bottom:16px; }
+  .label { font-size:12px; color:var(--soft); letter-spacing:.02em; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
+  .label::before { content:""; width:3px; height:12px; background:var(--accent); }
+  h2 { font-size:18px; line-height:1.3; font-weight:600; letter-spacing:-0.02em; margin:0; }
+  .sub { color:var(--soft); font-size:13px; margin:2px 0 0; }
+  #drop { border-style:dashed; text-align:center; padding:40px 20px; cursor:pointer; color:var(--soft); transition:border-color .15s, color .15s, background .15s; }
+  #drop strong { color:var(--ink); font-weight:500; display:block; margin-bottom:2px; }
+  #drop:hover, #drop.over { border-color:var(--accent); color:var(--ink); background:var(--raise); }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-top:16px; }
+  label { font-size:12px; color:var(--soft); display:block; }
+  label.check { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink); height:32px; }
+  input[type=checkbox] { accent-color:var(--accent); width:14px; height:14px; margin:0; }
+  select { font:inherit; font-size:13px; height:32px; padding:0 28px 0 10px; border:1px solid var(--line); border-radius:6px; background:var(--raise); color:var(--ink); margin-top:4px; }
+  button { font:inherit; font-size:13px; font-weight:500; height:32px; padding:0 12px; border-radius:6px; border:1px solid var(--line); background:var(--raise); color:var(--ink); cursor:pointer; transition:background .15s, border-color .15s; }
+  button:hover:not(:disabled) { border-color:var(--faint); }
+  button.main { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.main:hover:not(:disabled) { background:#7a3fe0; border-color:#7a3fe0; }
+  button.ghost { background:transparent; }
+  button:disabled { opacity:.4; cursor:default; }
+  button:focus-visible, select:focus-visible, #drop:focus-visible, a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  #chapters { max-height:300px; overflow:auto; margin-top:12px; border:1px solid var(--line); border-radius:6px; background:var(--bg); }
+  .ch, .q { display:flex; gap:10px; padding:8px 12px; border-bottom:1px solid var(--line); align-items:center; font-size:13px; }
+  .ch { color:var(--ink); cursor:pointer; } .ch:last-child, .q:last-child { border-bottom:0; } .ch:hover { background:var(--raise); }
+  .ch span.t, .q span.t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .m { color:var(--soft); font-size:12px; white-space:nowrap; }
+  .ch.done span.t { color:var(--soft); } .ch.done span.t::after { content:"done"; color:var(--accent-ink); font-size:11px; margin-left:8px; border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+  #qlist { border:1px solid var(--line); border-radius:6px; background:var(--bg); }
+  .q .pos { color:var(--faint); width:1.6em; font-size:12px; }
+  .q.running span.t { font-weight:600; } .q.running .pos { color:var(--accent-ink); } .q.done span.t { color:var(--soft); } .q.error .m { color:var(--danger); }
+  .links { font-size:12px; margin-top:16px; display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  .links a, .q a { color:var(--accent-ink); cursor:pointer; font-size:12px; } .links a:hover, .q a:hover { text-decoration:underline; }
+  #total { color:var(--soft); margin-left:auto; font-size:12px; }
+  #work { margin-top:16px; border-top:1px solid var(--line); padding-top:16px; }
+  #state { font-weight:600; font-size:13px; } #detail { margin-left:6px; }
+  #bar { height:4px; background:var(--line); border-radius:2px; overflow:hidden; margin:10px 0 12px; } #bar div { height:100%; width:0; background:var(--accent); transition:width .4s; }
+  #log { font-size:12px; line-height:1.6; color:var(--soft); white-space:pre-wrap; max-height:140px; overflow:auto; margin:0; }
+  #err { color:var(--danger); font-size:13px; min-height:0; margin:0 0 12px; } #err:empty { display:none; }
+  audio { width:100%; margin-top:14px; height:36px; } .hide { display:none !important; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style></head><body>
+<header><div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="28" height="28" role="img" aria-label="book2audio"><rect x="0.5" y="0.5" width="63" height="63" rx="13" fill="var(--tile)" stroke="var(--tile-line)"/><path d="M17 35 V41 M30 29 V41" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="42" y="20" width="9" height="24" fill="#8C52EE"/></svg><span class="word">book2audio</span><span class="tag">Ebooks in, audiobooks out. All on this Mac.</span>
+<button id="theme" class="ghost" aria-label="Switch between dark and light theme">Light</button></div></header>
+<main>
 
 <div id="queue" class="card hide">
-  <h2>Queue</h2>
+  <p class="label">Queue</p>
   <div id="qlist"></div>
   <div class="row">
     <button id="qstart" class="main">Start the queue</button>
@@ -742,23 +773,24 @@ PAGE = r"""<!doctype html>
   <div id="work" class="hide" style="margin-top:14px"><strong id="state"></strong> <span id="detail" class="m"></span><div id="bar"><div></div></div><pre id="log"></pre></div>
 </div>
 
-<div id="drop" class="card" tabindex="0" role="button">Drop an EPUB here, or click to choose one<br><small>AZW3 and MOBI work if Calibre is installed</small></div>
+<div id="drop" class="card" tabindex="0" role="button"><strong>Drop an EPUB here, or click to choose one</strong>AZW3 and MOBI work if Calibre is installed</div>
 <input id="file" type="file" accept=".epub,.azw3,.azw,.mobi" class="hide">
 <p id="err"></p>
 
 <div id="book" class="card hide">
-  <h2 id="title"></h2><div id="meta" class="sub" style="margin:0"></div>
+  <p class="label">Book</p>
+  <h2 id="title"></h2><div id="meta" class="sub mono"></div>
   <div class="row">
     <div><label for="model">Voice model</label><select id="model"><option value="voxtral">Natural (Voxtral)</option><option value="voxtral-4bit">Natural, lighter (Voxtral 4-bit)</option><option value="kokoro">Fast (Kokoro)</option></select></div>
     <div><label for="voice">Voice</label><select id="voice"></select></div>
-    <div><label><input type="checkbox" id="iphone" checked> Copy to iCloud Drive for the iPhone</label></div>
+    <label class="check"><input type="checkbox" id="iphone" checked> Copy to iCloud Drive for the iPhone</label>
   </div>
   <div class="links"><a id="all">Select all</a><a id="none">Select none</a><a id="todo">Only chapters not done</a><span id="total"></span></div>
   <div id="chapters"></div>
   <div class="row">
     <button id="preview">1-minute preview</button>
     <button id="add" class="main">Add to the queue</button>
-    <button id="folder">Open folder</button>
+    <button id="folder" class="ghost">Open folder</button>
   </div>
   <audio id="player" controls class="hide"></audio>
 </div>
@@ -798,9 +830,9 @@ function showBook(b) {
   $("book").classList.remove("hide"); $("player").classList.add("hide"); countSelected();
 }
 function upload(file) {
-  if (!file) return; $("drop").textContent = "Reading " + file.name + "...";
+  if (!file) return; $("drop").innerHTML = "<strong>Reading the book...</strong>"; $("drop").append(file.name);
   api("/open", { method:"POST", headers:{ "X-Name": encodeURIComponent(file.name) }, body:file })
-    .then(showBook).catch(fail).finally(() => { $("drop").innerHTML = "Drop another book here, or click to choose one"; });
+    .then(showBook).catch(fail).finally(() => { $("drop").innerHTML = "<strong>Drop another book here, or click to choose one</strong>It will be added behind the others"; });
 }
 function settings() {
   const chapters = countSelected(); if (!chapters.length) { fail("Select at least one chapter."); return null; }
@@ -842,7 +874,7 @@ function poll() {
 }
 $("drop").onclick = () => $("file").click();
 $("drop").onkeydown = e => { if (e.key === "Enter" || e.key === " ") $("file").click(); };
-$("file").onchange = e => upload(e.target.files[0]);
+$("file").onchange = e => { upload(e.target.files[0]); e.target.value = ""; };   // so the same book can be chosen again
 ["dragover","dragenter"].forEach(n => $("drop").addEventListener(n, e => { e.preventDefault(); $("drop").classList.add("over"); }));
 ["dragleave","drop"].forEach(n => $("drop").addEventListener(n, e => { e.preventDefault(); $("drop").classList.remove("over"); }));
 $("drop").addEventListener("drop", e => upload(e.dataTransfer.files[0]));
@@ -854,6 +886,10 @@ $("add").onclick = () => { const d = settings(); if (d) post("/queue/add", d).th
 $("qstart").onclick = () => post("/queue/start").then(poll).catch(fail);
 $("stop").onclick = () => post("/stop").then(poll).catch(fail);
 $("folder").onclick = () => post("/folder").catch(fail);
+const themeLabel = () => { $("theme").textContent = document.documentElement.dataset.theme === "light" ? "Dark" : "Light"; };
+$("theme").onclick = () => { const t = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = t; try { localStorage.setItem("theme", t); } catch (e) {} themeLabel(); };
+themeLabel();
 poll();
 </script></body></html>
 """
