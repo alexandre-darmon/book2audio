@@ -2132,14 +2132,23 @@ ICON_64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAABmJLR0QA/wD/AP+gvaeTA
 ICON_180 = "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"
 
 
+NOTIFIER = Path.home() / "Library" / "Application Support" / "book2audio" / "book2audio.app"
+
+
 def notify(message: str) -> None:
-    """A macOS notification, for when the page is not in front. Never an error if it cannot be shown."""
-    if sys.platform == "darwin":
-        try:
-            subprocess.run(["osascript", "-e", f'display notification {json.dumps(message)} with title "book2audio"'],
-                           capture_output=True, timeout=5)
-        except Exception:
-            pass
+    """A macOS notification, for when the page is not in front. Never an error if it cannot be shown.
+    The installer makes a small helper app for it, so that the notification carries the book2audio icon."""
+    if sys.platform != "darwin":
+        return
+    try:
+        if NOTIFIER.is_dir():
+            (NOTIFIER.parent / "notification.txt").write_text(f"book2audio\n{' '.join(message.split())}\n", encoding="utf-8")
+            if subprocess.run(["open", "-g", str(NOTIFIER)], capture_output=True, timeout=5).returncode == 0:
+                return
+        subprocess.run(["osascript", "-e", f'display notification {json.dumps(message)} with title "book2audio"'],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
 
 
 class WebReport(Report):

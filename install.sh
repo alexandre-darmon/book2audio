@@ -62,6 +62,32 @@ PLIST
     rm -f "$SET/src.png"
     iconutil -c icns "$SET" -o "$APP/Contents/Resources/icon.icns" >/dev/null 2>&1 || true
   fi
+  make_notifier || true
+}
+
+# A tiny helper app that shows the "finished" notification, so that it carries the book2audio icon
+# (a notification sent from the Terminal shows a generic script icon). Optional: without it, the
+# notification still appears, with the generic icon.
+make_notifier() {
+  DIR="$HOME/Library/Application Support/book2audio"
+  NOTIFIER="$DIR/book2audio.app"
+  [ -f "$APP/Contents/Resources/icon.icns" ] || return 0
+  command -v osacompile >/dev/null 2>&1 || return 0
+  mkdir -p "$DIR"
+  rm -rf "$NOTIFIER"
+  osacompile -o "$NOTIFIER" \
+    -e 'set f to (POSIX path of (path to home folder)) & "Library/Application Support/book2audio/notification.txt"' \
+    -e 'set t to paragraphs of (read (POSIX file f) as «class utf8»)' \
+    -e 'display notification (item 2 of t) with title (item 1 of t)' \
+    -e 'delay 2' >/dev/null 2>&1 || { rm -rf "$NOTIFIER"; return 0; }
+  cp "$APP/Contents/Resources/icon.icns" "$NOTIFIER/Contents/Resources/applet.icns"
+  rm -f "$NOTIFIER/Contents/Resources/Assets.car"
+  PL="$NOTIFIER/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$PL" >/dev/null 2>&1 || true
+  /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PL" >/dev/null 2>&1 || true
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier net.alexdarmon.book2audio.notifier" "$PL" >/dev/null 2>&1 \
+    || /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string net.alexdarmon.book2audio.notifier" "$PL" >/dev/null 2>&1 || true
+  codesign --force -s - "$NOTIFIER" >/dev/null 2>&1 || true
 }
 
 APP_NOTE=""
