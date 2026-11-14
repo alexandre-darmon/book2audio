@@ -241,7 +241,8 @@ def read_epub(path: Path, min_chars: int = 500) -> Book:
 
 
 def html_to_epub(html: Path, out: Path, fallback_title: str) -> None:
-    """Old MOBI files unpack to one long HTML page. Cut it at its page breaks and wrap it as an EPUB."""
+    """Old MOBI files unpack to one long HTML page, with a list of chapter positions beside it.
+    Cut the page at its chapters and page breaks, and wrap the pieces as an EPUB with its table of contents."""
     raw = html.read_bytes()
     try:
         text = raw.decode("utf-8")
@@ -249,27 +250,75 @@ def html_to_epub(html: Path, out: Path, fallback_title: str) -> None:
         text = raw.decode("cp1252", errors="replace")
     opf = next(iter(html.parent.glob("*.opf")), None)
     meta = opf.read_text(encoding="utf-8", errors="replace") if opf else ""
+    ncx = next(iter(html.parent.glob("*.ncx")), None)
+    toc = ncx.read_text(encoding="utf-8", errors="replace") if ncx else ""
 
     def field(name: str, default: str = "") -> str:
         found = re.search(rf"<dc:{name}[^>]*>(.*?)</dc:{name}>", meta, re.S | re.I)
         return re.sub(r"\s+", " ", found.group(1)).strip() if found else default
 
-    body = re.search(r"<body[^>]*>(.*)</body>", text, re.S | re.I)
-    parts = [x for x in re.split(r"<mbp:pagebreak\s*/?>", body.group(1) if body else text, flags=re.I)
-             if re.search(r"\w", re.sub(r"<[^>]+>", " ", x))]
-    names = [f"part{i:04d}.xhtml" for i in range(1, len(parts) + 1)]
+    def position(anchor: str) -> int:
+        """Where the block holding this anchor starts, or -1."""
+        found = re.search(rf'<a\s[^>]*id="{re.escape(anchor)}"', text)
+        if not found:
+            return -1
+        start = found.start()
+        window = max(0, start - 600)
+        opened = None
+        for opened in re.finditer(r"<(?:p|div|h[1-6]|blockquote)\b[^>]*>", text[window:start]):
+            pass
+        if opened:                                   # the anchor sits at the start of a block: cut before that block
+            before = text[window + opened.start():start]
+            if not re.search(r"</(?:p|div|h[1-6]|blockquote)>", before) and not re.search(r"\w", re.sub(r"<[^>]+>", " ", before)):
+                return window + opened.start()
+        return start
+
+    body = re.search(r"<body[^>]*>", text, re.I)
+    begin = body.end() if body else 0
+    end = text.lower().rfind("</body>")
+    end = end if end > begin else len(text)
+    titles: dict[int, str] = {}                      # cut position -> chapter title
+    for label, anchor in re.findall(r"<navLabel>\s*<text>(.*?)</text>\s*</navLabel>\s*<content src=\"[^\"#]*#([^\"]+)\"", toc, re.S):
+        at = position(anchor)
+        if at >= begin:
+            titles.setdefault(at, re.sub(r"\s+", " ", label).strip())
+    contents = re.search(r'<reference[^>]*type="toc"[^>]*href="[^"#]*#([^"]+)"', meta)
+    contents_at = position(contents.group(1)) if contents else -1
+    cuts = sorted({begin, *titles, *(m.end() for m in re.finditer(r"<mbp:pagebreak\s*/?>", text, re.I) if begin <= m.end() < end)})
+    pieces = []                                      # (title or "", html)
+    for start, stop in zip(cuts, cuts[1:] + [end]):
+        part = re.sub(r"<mbp:pagebreak\s*/?>", "", text[start:stop], flags=re.I)
+        if start <= contents_at < stop and contents_at >= 0:
+            continue                                 # the book's own table of contents page: not to be read aloud
+        if re.search(r"\w", re.sub(r"<[^>]+>", " ", part)):
+            pieces.append((titles.get(start, ""), part))
+    names = [f"part{i:04d}.xhtml" for i in range(1, len(pieces) + 1)]
     esc = lambda t: t.replace("&", "&amp;").replace("<", "&lt;")
+    cover = re.search(r'<meta name="cover" content="([^"]+)"', meta)
+    cover = re.search(rf'<item[^>]*id="{re.escape(cover.group(1))}"[^>]*href="([^"]+)"', meta) if cover else None
+    cover_file = html.parent / cover.group(1) if cover else None
+    cover_item = ""
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         z.writestr("META-INF/container.xml", '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
                    '<rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
-        z.writestr("book.opf", '<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+        if cover_file and cover_file.is_file() and cover_file.suffix.lower() in (".jpg", ".jpeg", ".png"):
+            kind = "image/png" if cover_file.suffix.lower() == ".png" else "image/jpeg"
+            z.write(cover_file, "cover" + cover_file.suffix.lower())
+            cover_item = f'<item id="cover" href="cover{cover_file.suffix.lower()}" media-type="{kind}" properties="cover-image"/>'
+        z.writestr("book.opf", '<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0">'
                    '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
                    f'<dc:title>{esc(field("title", fallback_title))}</dc:title><dc:creator>{esc(field("creator"))}</dc:creator>'
                    f'<dc:language>{esc(field("language", "en"))}</dc:language></metadata><manifest>'
+                   '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>' + cover_item
                    + "".join(f'<item id="p{i}" href="{n}" media-type="application/xhtml+xml"/>' for i, n in enumerate(names))
-                   + "</manifest><spine>" + "".join(f'<itemref idref="p{i}"/>' for i in range(len(names))) + "</spine></package>")
-        for name, part in zip(names, parts):
+                   + '</manifest><spine toc="ncx">' + "".join(f'<itemref idref="p{i}"/>' for i in range(len(names))) + "</spine></package>")
+        z.writestr("toc.ncx", '<?xml version="1.0" encoding="utf-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap>'
+                   + "".join(f'<navPoint id="n{i}" playOrder="{i + 1}"><navLabel><text>{esc(title)}</text></navLabel><content src="{name}"/></navPoint>'
+                             for i, (name, (title, _)) in enumerate(zip(names, pieces)) if title) + "</navMap></ncx>")
+        for name, (_, part) in zip(names, pieces):
+            # a large first letter followed by a space ("L orsque") would be read as a separate word
+            part = re.sub(r"(<font[^>]*>\s*\w)(?:\xa0|&nbsp;|&#160;|\s)+(</font>)(?=\w)", r"\1\2", part)
             z.writestr(name, f"<html><head><title></title></head><body>{part}</body></html>")
 
 
