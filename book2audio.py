@@ -1337,7 +1337,8 @@ PAGE = r"""<!doctype html>
   button:focus-visible, select:focus-visible, a:focus-visible, #drop:focus-visible, .ch:focus-within { outline:2px solid var(--accent); outline-offset:2px; }
   select { font:inherit; font-size:13px; height:32px; padding:0 28px 0 10px; border:1px solid var(--line); border-radius:6px; background:var(--raise); color:var(--ink); max-width:100%; }
   input[type=checkbox] { accent-color:var(--accent); width:14px; height:14px; margin:0; flex:none; }
-  label.field { display:grid; gap:4px; font-size:12px; color:var(--soft); min-width:0; }
+  label.field { display:grid; grid-template-columns:minmax(0, 1fr); gap:4px; font-size:12px; color:var(--soft); min-width:0; }
+  label.field select { width:100%; min-width:0; }
   label.check { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; }
 
   main { max-width:780px; margin:0 auto; padding:28px 24px 96px; display:grid; grid-template-columns:minmax(0, 1fr); gap:16px; }
