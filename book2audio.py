@@ -97,6 +97,8 @@ class Book:
     author: str
     language: str
     chapters: list[Chapter]
+    cover: bytes = b""          # the cover image found inside the ebook, if any
+    cover_ext: str = ""
 
 
 BLOCKS = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote",
@@ -191,6 +193,20 @@ def read_epub(path: Path, min_chars: int = 500) -> Book:
 
         manifest = [dict(i.attrib) for i in opf.findall(".//{*}manifest/{*}item")]
         by_id = {i["id"]: i for i in manifest if "id" in i}
+
+        # The cover is already in the book: no need to look for it anywhere else.
+        cover, cover_ext = b"", ""
+        named = opf.find(".//{*}metadata/{*}meta[@name='cover']")
+        images = [i for i in manifest if i.get("media-type", "") in ("image/jpeg", "image/png")]
+        pick = next((i for i in images if "cover-image" in (i.get("properties") or "").split()), None) \
+            or (by_id.get(named.get("content")) if named is not None else None) \
+            or next((i for i in images if "cover" in (i.get("id", "") + i.get("href", "")).lower()), None)
+        if pick and pick.get("media-type") in ("image/jpeg", "image/png"):
+            try:
+                cover = z.read(posixpath.normpath(posixpath.join(base, unquote(pick["href"]))))
+                cover_ext = ".png" if pick["media-type"] == "image/png" else ".jpg"
+            except KeyError:
+                cover = b""
         labels = _toc_labels(z, manifest, base)
 
         chapters: list[Chapter] = []
@@ -219,7 +235,7 @@ def read_epub(path: Path, min_chars: int = 500) -> Book:
             chapters.append(Chapter(title, paragraphs))
 
     chapters = [c for c in chapters if c.chars >= min_chars]
-    return Book(meta("title", path.stem), meta("creator", ""), meta("language", "en").lower(), chapters)
+    return Book(meta("title", path.stem), meta("creator", ""), meta("language", "en").lower(), chapters, cover, cover_ext)
 
 
 def to_epub(path: Path, workdir: Path) -> Path:
@@ -307,7 +323,7 @@ _PARTS = r"chapitre|livre|partie|tome|acte|scène|volume|chant|chapter|book|part
 
 def prepare_text(text: str, language: str = "fr") -> str:
     """Rewrite nothing: only spell out what a narrator would say differently from what is printed."""
-    french = language.startswith("fr")
+    french, english = language.startswith("fr"), language.startswith("en")
     text = re.sub(r"(?<=[\w»”\"'.,;:!?])\s?\[\d+\]", "", text)          # [12] footnote calls
     text = re.sub(r"(?<=[^\W\d])[¹²³⁴⁵⁶⁷⁸⁹⁰]+|(?<=\w)\*+", "", text)       # word¹, word*
     text = text.replace("...", "…")
@@ -326,7 +342,7 @@ def prepare_text(text: str, language: str = "fr") -> str:
         return f"{m.group(1)} {'premier' if n == 1 else fr_number(n)}"
     if french:
         text = re.sub(rf"\b({_PARTS})\s+([IVXL]+)\b", part_number, text, flags=re.I)
-    else:                                            # never the pronoun: "the book I read"
+    elif english:                                    # never the pronoun: "the book I read"
         text = re.sub(r"\b(Chapter|Book|Part|Act|Scene|Volume)\s+([IVXL]{2,}|V|X)\b", part_number, text)
 
     if french:
@@ -351,7 +367,7 @@ def prepare_text(text: str, language: str = "fr") -> str:
         text = re.sub(r"\betc\.", "et cetera", text)
         for pattern, word in _FR_WORDS:
             text = re.sub(pattern, word, text)
-    else:
+    elif english:
         text = re.sub(r"\betc\.(?=\s+[A-Z“\"]|\s*$)", "et cetera.", text)
         text = re.sub(r"\betc\.", "et cetera", text)
         for pattern, word in _EN_WORDS:
@@ -678,7 +694,7 @@ def keep_awake():
             proc.terminate()
 
 
-def build_m4b(files: list[tuple[str, Path]], target: Path, book: Book) -> None:
+def build_m4b(files: list[tuple[str, Path]], target: Path, book: Book, cover: Path | None = None) -> None:
     """Join the chapter files into one audiobook file with chapter markers."""
     def esc(s: str) -> str:
         return re.sub(r"([=;#\\\n])", r"\\\1", s)
@@ -697,8 +713,13 @@ def build_m4b(files: list[tuple[str, Path]], target: Path, book: Book) -> None:
         listing.write_text("\n".join(lines), encoding="utf-8")
         meta_file = Path(tmp) / "meta.txt"
         meta_file.write_text("\n".join(meta), encoding="utf-8")
-        subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
-                        "-i", str(meta_file), "-map_metadata", "1", "-map", "0:a", "-c", "copy", "-f", "mp4", str(target)], check=True)
+        base = [ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-i", str(meta_file)]
+        if cover and cover.exists():                 # the cover shows up in audiobook players
+            with_cover = subprocess.run([*base, "-i", str(cover), "-map_metadata", "1", "-map", "0:a", "-map", "2:v", "-c", "copy",
+                                         "-disposition:v:0", "attached_pic", "-f", "mp4", str(target)], capture_output=True)
+            if with_cover.returncode == 0:
+                return
+        subprocess.run([*base, "-map_metadata", "1", "-map", "0:a", "-c", "copy", "-f", "mp4", str(target)], check=True)
 
 
 # --------------------------------------------------------------------------
@@ -953,7 +974,10 @@ MODELS = {
     "kokoro": {"label": "Kokoro", "need": 1.5, "gpu": True, "langs": "en fr es it pt hi ja zh"},
 }
 MODEL_LABELS = {k: v["label"] for k, v in MODELS.items()}
-PREFERENCE = {"fr": ["voxtral-4bit", "voxtral", "pocket", "kokoro"], "en": ["kokoro", "voxtral-4bit", "pocket"]}
+# Voxtral 4-bit comes first wherever it speaks the language: it is the model confirmed on a real Mac.
+PREFERENCE = {"fr": ["voxtral-4bit", "voxtral", "pocket", "kokoro"], "en": ["voxtral-4bit", "kokoro", "pocket", "voxtral"]}
+LANGUAGES = {"fr": "French", "en": "English", "es": "Spanish", "de": "German", "it": "Italian", "pt": "Portuguese",
+             "nl": "Dutch", "hi": "Hindi", "ar": "Arabic", "ja": "Japanese", "zh": "Chinese"}
 _machine: dict = {}
 
 
@@ -1207,7 +1231,11 @@ def run_book(book: Book, selection: list[int], language: str, args, out_dir: Pat
             if chapter_target(out_dir, n, c, fmt).exists()]
     if not args.no_m4b and fmt == "m4a" and done:
         target = out_dir / f"{safe_name(book.title)}.m4b"
-        build_m4b(done, target, book)
+        cover = None
+        if book.cover:
+            cover = out_dir / f"cover{book.cover_ext}"
+            cover.write_bytes(book.cover)
+        build_m4b(done, target, book, cover)
         REPORT.log(f"Audiobook written to {target} ({len(done)} of {len(book.chapters)} chapters)")
         if args.iphone:
             if ICLOUD.exists():
@@ -1297,16 +1325,15 @@ PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>book2audio</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='.5' y='.5' width='63' height='63' rx='13' fill='%23111113' stroke='%2326262B'/%3E%3Cpath d='M13 30V34M22 26V38M42 26V38M51 30V34' fill='none' stroke='%23F7F7F7' stroke-width='6' stroke-linecap='square'/%3E%3Crect x='28' y='20' width='8' height='24' fill='%238C52EE'/%3E%3C/svg%3E">
-<script>try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
 <style>
-  :root { color-scheme: dark;
+  :root { color-scheme: dark;       /* dark or light follows the Mac's own setting */
     --bg:#0a0a0c; --panel:#111113; --raise:#17171a; --line:#232327; --ink:#ededef; --soft:#8b8b93; --faint:#5c5c66;
     --accent:#8C52EE; --accent-ink:#b392f5; --accent-wash:rgba(140,82,238,.14); --tile:#111113; --tile-line:#26262B; --glyph:#F7F7F7;
     --danger:#f2777a; --ok:#58c98b; }
-  :root[data-theme="light"] { color-scheme: light;
+  @media (prefers-color-scheme: light) { :root { color-scheme: light;
     --bg:#ffffff; --panel:#fafafa; --raise:#f1f1f3; --line:#E3E3E3; --ink:#0A0A0A; --soft:#62626b; --faint:#9a9aa3;
     --accent:#8C52EE; --accent-ink:#7a3fe0; --accent-wash:rgba(140,82,238,.10); --tile:#F7F7F7; --tile-line:#E3E3E3; --glyph:#0A0A0A;
-    --danger:#c62f33; --ok:#1f8f55; }
+    --danger:#c62f33; --ok:#1f8f55; } }
   * { box-sizing:border-box; }
   html { -webkit-text-size-adjust:100%; }
   body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Helvetica Neue", sans-serif;
@@ -1323,7 +1350,11 @@ PAGE = r"""<!doctype html>
   header svg { display:block; flex:none; }
   .word { font-weight:650; letter-spacing:-0.02em; font-size:15px; }
   #mac { color:var(--soft); font-size:13px; margin-left:6px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .bar-actions { margin-left:auto; display:flex; gap:2px; flex:none; }
+  .bar-actions { margin-left:auto; display:flex; gap:2px; flex:none; align-items:center; }
+  #power { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--soft); margin-right:8px; }
+  #power i { width:8px; height:8px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+  #power.off i { background:var(--danger); box-shadow:0 0 0 3px color-mix(in srgb, var(--danger) 22%, transparent); }
+  button.icon { width:32px; padding:0; display:grid; place-items:center; } button.icon svg { display:block; }
 
   /* Controls */
   button { font:inherit; font-size:13px; font-weight:500; height:32px; padding:0 12px; border-radius:6px; border:1px solid var(--line); background:var(--raise); color:var(--ink); cursor:pointer;
@@ -1395,7 +1426,9 @@ PAGE = r"""<!doctype html>
   .book-head { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
   .book-head > div { min-width:0; }
   #meta { color:var(--soft); font-size:13px; margin-top:2px; }
-  .settings { display:grid; grid-template-columns:minmax(0, 1.4fr) minmax(0, 1fr); gap:12px; margin-top:18px; }
+  .settings { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, .9fr); gap:12px; margin-top:18px; align-items:end; }
+  .cover { width:52px; height:74px; object-fit:cover; border-radius:4px; border:1px solid var(--line); flex:none; background:var(--raise); }
+  .with-cover { display:flex; gap:14px; align-items:center; min-width:0; } .with-cover > div { min-width:0; }
   #summary { margin-top:16px; padding:12px 14px; border-radius:8px; background:var(--raise); font-size:13px; }
   #summary b { font-weight:600; }
   .pick { display:flex; gap:14px; align-items:center; margin-top:18px; font-size:13px; flex-wrap:wrap; }
@@ -1429,7 +1462,7 @@ PAGE = r"""<!doctype html>
 
   @media (max-width:640px) {
     header > div, main { padding-left:16px; padding-right:16px; } #mac { display:none; }
-    .settings, #steps { grid-template-columns:1fr; } #pct { font-size:34px; } .panel, #now { padding:16px; } #nowtitle { white-space:normal; }
+    .settings, #steps { grid-template-columns:1fr; } #powertext { display:none; } #pct { font-size:34px; } .panel, #now { padding:16px; } #nowtitle { white-space:normal; }
     .now-line { flex-wrap:wrap; gap:2px 16px; } .now-actions { flex-wrap:wrap; } .actions .main { margin-left:0; flex:1 1 100%; order:-1; }
     .q { grid-template-columns:20px minmax(0, 1fr); } .q .links { grid-column:2; } .q .meta, .q .hint { grid-column:2; }
   }
@@ -1439,19 +1472,21 @@ PAGE = r"""<!doctype html>
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="28" height="28" role="img" aria-label="book2audio"><rect x="0.5" y="0.5" width="63" height="63" rx="13" fill="var(--tile)" stroke="var(--tile-line)"/><path d="M13 30 V34 M22 26 V38 M42 26 V38 M51 30 V34" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="28" y="20" width="8" height="24" fill="#8C52EE"/></svg>
   <span class="word">book2audio</span><span id="mac"></span>
   <span class="bar-actions">
-    <button id="theme" class="quiet" aria-label="Switch between dark and light theme">Light</button>
-    <button id="restart" class="quiet" title="Stop and start again, for example after an update. A book being read goes on where it stopped.">Restart</button>
-    <button id="quit" class="quiet" title="Stop book2audio. Everything read so far is kept.">Quit</button>
+    <span id="power" class="on"><i></i><span id="powertext">On</span></span>
+    <button id="restart" class="quiet icon" aria-label="Restart book2audio" title="Restart, for example after an update. A book being read goes on where it stopped.">
+      <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 10a6 6 0 1 1-1.9-4.4"/><path d="M16.2 3.2v3.4h-3.4"/></svg></button>
+    <button id="quit" class="quiet icon" aria-label="Turn book2audio off" title="Turn book2audio off. Everything read so far is kept.">
+      <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 3v7"/><path d="M6 5.3a6 6 0 1 0 8 0"/></svg></button>
   </span>
 </div></header>
 
-<div id="gone" class="hide center"><h2>book2audio has quit</h2><p>Everything read so far is kept, and the queue will be there next time. You can close this tab.</p></div>
+<div id="gone" class="hide center"><h2>book2audio is off</h2><p>Everything read so far is kept, and the queue will be there next time. To turn it on again, open book2audio from your Applications folder. This page reconnects by itself.</p></div>
 <div id="back" class="hide center"><h2>Restarting</h2><p>This page comes back by itself in a few seconds. Nothing read so far is lost.</p></div>
 
 <main>
   <section id="now" class="panel hide" aria-live="polite">
     <div class="now-top">
-      <div><div id="nowkind"></div><h2 id="nowtitle"></h2></div>
+      <div class="with-cover"><img id="nowcover" class="cover hide" alt=""><div><div id="nowkind"></div><h2 id="nowtitle"></h2></div></div>
       <div id="pct"></div>
     </div>
     <div id="left"></div>
@@ -1483,10 +1518,11 @@ PAGE = r"""<!doctype html>
 
   <section id="book" class="panel hide">
     <div class="book-head">
-      <div><h2 id="title"></h2><div id="meta"></div></div>
+      <div class="with-cover"><img id="bookcover" class="cover hide" alt=""><div><h2 id="title"></h2><div id="meta"></div></div></div>
       <button id="closebook" class="quiet" aria-label="Close this book">Close</button>
     </div>
     <div class="settings">
+      <label class="field"><span>Language<span id="langnote"></span></span><select id="lang"></select></label>
       <label class="field">Voice model<select id="model"><option value="voxtral-4bit" data-label="Natural (Voxtral 4-bit)"></option><option value="voxtral" data-label="Natural, full size (Voxtral, slower)"></option><option value="kyutai" data-label="Kyutai TTS (experimental)"></option><option value="pocket" data-label="Light, on the CPU (Pocket TTS)"></option><option value="kokoro" data-label="Fast (Kokoro)"></option></select></label>
       <label class="field">Voice<select id="voice"></select></label>
     </div>
@@ -1511,15 +1547,17 @@ PAGE = r"""<!doctype html>
 <script>
 const $ = id => document.getElementById(id);
 const VOX = { fr:["fr_female","fr_male"], en:["casual_female","casual_male","cheerful_female","neutral_female","neutral_male"],
-              es:["es_female","es_male"], de:["de_female","de_male"], it:["it_female","it_male"], pt:["pt_female","pt_male"], nl:["nl_female","nl_male"] };
+              es:["es_female","es_male"], de:["de_female","de_male"], it:["it_female","it_male"], pt:["pt_female","pt_male"], nl:["nl_female","nl_male"],
+              hi:["hi_female","hi_male"], ar:["ar_male"] };
 const VOICES = { voxtral: VOX, "voxtral-4bit": VOX,
                  kyutai: { fr:["cml-tts/fr/10087_11650_000028-0002_enhanced.wav"], en:["expresso/ex03-ex01_happy_001_channel1_334s.wav"] },
                  pocket: { fr:["estelle"], en:["alba","marius","cosette","jane","george"], de:["juergen"], es:["lola"], it:["giovanni"], pt:["rafael"] },
-                 kokoro: { fr:["ff_siwis"], en:["af_heart","af_bella","am_michael","am_adam","bf_emma","bm_george"], es:["ef_dora","em_alex"], it:["if_sara","im_nicola"], pt:["pf_dora"] } };
-const VOICE_NAMES = { fr_female:"French, woman", fr_male:"French, man", casual_female:"English, woman, casual", casual_male:"English, man, casual",
-                      cheerful_female:"English, woman, cheerful", neutral_female:"English, woman, neutral", neutral_male:"English, man, neutral" };
+                 kokoro: { fr:["ff_siwis"], en:["af_heart","af_bella","am_michael","am_adam","bf_emma","bm_george"], es:["ef_dora","em_alex"], it:["if_sara","im_nicola"], pt:["pf_dora"],
+                           hi:["hf_alpha"], ja:["jf_alpha"], zh:["zf_xiaobei"] } };
+const VOICE_NAMES = { casual_female:"Woman, casual", casual_male:"Man, casual", cheerful_female:"Woman, cheerful", neutral_female:"Woman, neutral", neutral_male:"Man, neutral" };
+const voiceName = v => VOICE_NAMES[v] || (/^[a-z]{2}_female$/.test(v) ? "Woman" : /^[a-z]{2}_male$/.test(v) ? "Man" : v.split("/").pop().replace(/\.wav$/, ""));
 const STATUS = { waiting:"Waiting", running:"Reading now", done:"Ready", error:"Failed" };
-let book = null, lastPreview = 0, timer = null, speeds = {}, quitting = false, restarting = false, boot = "", wasRunning = false, toastTimer = null;
+let book = null, lastPreview = 0, timer = null, speeds = {}, quitting = false, restarting = false, offline = false, boot = "", wasRunning = false, toastTimer = null;
 const api = (path, opts) => fetch(path, opts).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; });
 const post = (path, data) => api(path, { method:"POST", body:JSON.stringify(data || {}) });
 const fail = e => { $("err").textContent = e.message || e; };
@@ -1527,9 +1565,16 @@ const dur = h => h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : `${h >= 10 ?
 function toast(text) { $("toast").textContent = text; $("toast").classList.add("on"); clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("on"), 2600); }
 
 function fillVoices() {
-  const lang = book.language.slice(0, 2), list = (VOICES[$("model").value][lang]) || VOICES[$("model").value].en;
+  const list = (VOICES[$("model").value] || {})[$("lang").value] || [];
   $("voice").innerHTML = "";
-  list.forEach(v => { const o = document.createElement("option"); o.value = v; o.textContent = VOICE_NAMES[v] || v.split("/").pop().replace(/\.wav$/, ""); $("voice").append(o); });
+  list.forEach(v => { const o = document.createElement("option"); o.value = v; o.textContent = voiceName(v); $("voice").append(o); });
+}
+function fillModels() {                                // only the models that speak this language and fit this Mac can be picked
+  const c = book.catalog, lang = $("lang").value, best = c.recommended[lang];
+  [...$("model").options].forEach(o => { const fit = c.fits[o.value] || "fits", speaks = (c.speaks[o.value] || []).includes(lang);
+    o.disabled = !speaks || fit === "no";
+    o.textContent = o.dataset.label + (!speaks ? `, no ${c.languages[lang]} voice` : o.value === best ? ", recommended" : fit === "no" ? ", too big for this Mac" : fit === "tight" ? ", tight on this Mac" : ""); });
+  $("model").value = best; fillVoices();
 }
 function countSelected() {
   const boxes = [...document.querySelectorAll("#chapters input:checked")];
@@ -1543,10 +1588,12 @@ function countSelected() {
 function showBook(b) {
   book = b; $("err").textContent = "";
   $("title").textContent = b.title; $("meta").textContent = [b.author, b.out].filter(Boolean).join(", saved in ");
-  [...$("model").options].forEach(o => { const fit = (b.fits || {})[o.value] || "fits";
-    o.disabled = fit === "no";
-    o.textContent = o.dataset.label + (o.value === b.recommended ? ", recommended for this Mac" : fit === "no" ? ", too big for this Mac" : fit === "tight" ? ", tight on this Mac" : ""); });
-  $("model").value = b.recommended || "voxtral-4bit"; fillVoices();
+  $("lang").innerHTML = "";
+  const short = b.language.slice(0, 2);
+  Object.entries(b.catalog.languages).forEach(([code, name]) => { const o = document.createElement("option"); o.value = code; o.textContent = name; $("lang").append(o); });
+  $("langnote").textContent = b.catalog.languages[short] ? `, ${b.catalog.languages[short]} according to the book` : "";
+  $("lang").value = b.catalog.languages[short] ? short : "en"; fillModels();
+  $("bookcover").classList.toggle("hide", !b.cover); if (b.cover) $("bookcover").src = "/cover?t=" + Date.now();
   $("chapters").innerHTML = "";
   b.chapters.forEach(c => {
     const row = document.createElement("label"); row.className = "ch" + (c.done ? " done" : c.skip ? " skip" : "");
@@ -1566,7 +1613,7 @@ function upload(file) {
 function settings() {
   const chapters = countSelected(); if (!chapters.length) { fail("Tick at least one chapter."); return null; }
   $("err").textContent = "";
-  return { chapters, model:$("model").value, voice:$("voice").value, iphone:$("iphone").checked };
+  return { chapters, lang:$("lang").value, model:$("model").value, voice:$("voice").value, iphone:$("iphone").checked };
 }
 let hasQueue = false;
 function layout() {                                   // the drop zone shrinks once there is something else to look at
@@ -1603,6 +1650,8 @@ function showNow(s) {
   const segs = s.running ? s.segments : [], cur = segs.find(g => g.n === s.now), reading = s.running && s.total > 0;
   $("nowkind").textContent = s.running ? (s.kind || "Working") : "Stopped on an error";
   $("nowtitle").textContent = s.title || "";
+  const cover = s.book_id && (s.queue.find(q => q.id === s.book_id) || {}).cover ? "/cover?id=" + s.book_id : "";
+  $("nowcover").classList.toggle("hide", !cover); if (cover && !$("nowcover").src.endsWith(cover)) $("nowcover").src = cover;
   $("pct").innerHTML = reading ? `${s.percent}<small>%</small>` : "";
   $("left").textContent = reading ? s.left.replace(/^about/, "About") : s.running ? "Getting the voice model ready..." : "";
   document.title = reading ? `${s.percent}% ${s.title || "book2audio"}` : "book2audio";
@@ -1642,7 +1691,7 @@ function showCompare(s) {
 function poll() {
   clearTimeout(timer);
   api("/status").then(s => {
-    if (restarting && s.boot !== boot) { location.reload(); return; }     // the new one has started
+    if ((restarting || offline) && s.boot !== boot) { location.reload(); return; }     // it is back: start from a clean page
     if (restarting) { timer = setTimeout(poll, 700); return; }             // the old one is still closing
     boot = s.boot; speeds = s.speeds || {}; if (book) countSelected();
     if (s.machine && s.machine.memory_gb) $("mac").textContent = `on ${s.machine.chip}, ${s.machine.memory_gb} GB`;
@@ -1654,9 +1703,11 @@ function poll() {
     if (wasRunning && !s.running && !s.error && s.kind && s.kind.startsWith("Book") && s.queue.every(q => q.status !== "waiting")) toast("The queue is finished.");
     wasRunning = s.running;
     if (s.running) timer = setTimeout(poll, 1000);
-  }).catch(() => { if (restarting) timer = setTimeout(poll, 700);
-    else if (quitting) { document.querySelector("main").classList.add("hide"); $("gone").classList.remove("hide"); }
-    else timer = setTimeout(poll, 3000); });
+  }).catch(() => { if (restarting) { timer = setTimeout(poll, 700); return; }
+    offline = true; boot = boot || "?";                // turned off, closed or crashed: say so, and keep listening for its return
+    document.querySelector("main").classList.add("hide"); $("gone").classList.remove("hide");
+    $("power").className = "off"; $("powertext").textContent = "Off"; $("restart").disabled = $("quit").disabled = true; document.title = "book2audio (off)";
+    timer = setTimeout(poll, 2000); });
 }
 $("drop").onclick = () => $("file").click();
 $("drop").onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } };
@@ -1664,6 +1715,7 @@ $("file").onchange = e => { upload(e.target.files[0]); e.target.value = ""; };  
 ["dragover","dragenter"].forEach(n => document.addEventListener(n, e => { e.preventDefault(); $("drop").classList.add("over"); }));
 ["dragleave","drop"].forEach(n => document.addEventListener(n, e => { e.preventDefault(); $("drop").classList.remove("over"); }));
 document.addEventListener("drop", e => upload(e.dataTransfer.files[0]));              // a book can be dropped anywhere on the page
+$("lang").onchange = () => { fillModels(); countSelected(); };
 $("model").onchange = () => { fillVoices(); countSelected(); }; $("chapters").onchange = countSelected;
 const setAll = fn => { document.querySelectorAll("#chapters .ch").forEach(r => r.querySelector("input").checked = fn(r)); countSelected(); };
 $("all").onclick = () => setAll(r => !r.classList.contains("skip")); $("none").onclick = () => setAll(() => false);
@@ -1679,11 +1731,8 @@ $("more").onclick = () => { $("log").classList.toggle("hide"); $("more").textCon
 $("restart").onclick = () => { restarting = true; clearTimeout(timer);
   document.querySelector("main").classList.add("hide"); $("back").classList.remove("hide");
   post("/restart").catch(() => {}).finally(() => { timer = setTimeout(poll, 700); }); };
-$("quit").onclick = () => { quitting = true; post("/quit").catch(() => {}).finally(() => setTimeout(poll, 1500)); };
-const themeLabel = () => { $("theme").textContent = document.documentElement.dataset.theme === "light" ? "Dark" : "Light"; };
-$("theme").onclick = () => { const t = document.documentElement.dataset.theme === "light" ? "dark" : "light";
-  document.documentElement.dataset.theme = t; try { localStorage.setItem("theme", t); } catch (e) {} themeLabel(); };
-themeLabel(); layout(); poll();
+$("quit").onclick = () => { quitting = true; post("/quit").catch(() => {}).finally(() => setTimeout(poll, 1200)); };
+layout(); poll();
 </script></body></html>
 """
 
@@ -1714,6 +1763,7 @@ class WebReport(Report):
         self.current = ""
         self.kind = ""                     # "Book 1 of 3", "Preview", "Comparing models"
         self.title = ""                    # the book being read
+        self.book_id = ""
         self.results: list[dict] = []      # model comparison, shown under the book
         self.comparing = ""
         self.segments: list[dict] = []     # one per chapter of the book being read
@@ -1781,13 +1831,20 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
         return [n for n in chapters if out.exists() and next(iter(out.glob(f"{n:02d} - *.m4a")), None)]
 
     def options(job: dict):
-        return argparse.Namespace(**{**vars(args), "model": job.get("model") or args.model,
+        return argparse.Namespace(**{**vars(args), "model": job.get("model") or args.model, "lang": job.get("lang") or args.lang,
                                      "voice": job.get("voice") or args.voice, "iphone": bool(job.get("iphone"))})
 
     def language_for(book: Book, opts) -> str:
         if "kokoro" in (opts.model or "") and (opts.voice or "").startswith("b"):
             return "en-gb"
-        return (args.lang or book.language or "en").lower()
+        return (opts.lang or book.language or "en").lower()
+
+    def catalog() -> dict:
+        """For the page: which models speak which language on this Mac, and the one to pick for each."""
+        return {"languages": LANGUAGES,
+                "speaks": {m: v["langs"].split() for m, v in MODELS.items()},
+                "fits": {m: model_fit(m) for m in MODELS},
+                "recommended": {code: recommend(code)["recommended"] for code in LANGUAGES}}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):          # keep the terminal quiet
@@ -1814,6 +1871,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 book = session["book"]
                 with lock:
                     view = [{"id": q["id"], "title": q["title"], "status": q["status"], "note": q.get("note", ""),
+                             "cover": Path(q["out"]).exists() and any(Path(q["out"]).glob("cover.*")),
                              "iphone": bool(q.get("iphone")) and ICLOUD.exists(),
                              "chapters": len(q["chapters"]), "done": len(files_done(Path(q["out"]), q["chapters"]))} for q in items]
                 self.reply({"running": state.running, "lines": state.lines[-12:], "i": state.i, "total": state.total,
@@ -1822,8 +1880,26 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                             "compare": state.results, "comparing": state.comparing,
                             "segments": state.segments if state.running else [], "now": state.now,
                             "speeds": load_speeds(), "machine": {"chip": machine_info()["chip"], "memory_gb": machine_info()["memory_gb"]},
-                            "boot": boot, "kind": state.kind, "title": state.title,
+                            "boot": boot, "kind": state.kind, "title": state.title, "book_id": state.book_id if state.kind.startswith("Book") else "",
                             "book_done": files_done(session["out"], list(range(1, len(book.chapters) + 1))) if book else []})
+            elif url.path == "/cover":                # the cover of the book being set up, or of a queued one
+                wanted = parse_qs(url.query).get("id", [""])[0]
+                data, kind = b"", "image/jpeg"
+                with lock:
+                    folder = next((Path(q["out"]) for q in items if q["id"] == wanted), None) if wanted else None
+                if folder:
+                    found = next(iter(sorted(folder.glob("cover.*"))), None) if folder.exists() else None
+                    if found:
+                        data, kind = found.read_bytes(), "image/png" if found.suffix == ".png" else "image/jpeg"
+                elif session["book"] and session["book"].cover:
+                    data, kind = session["book"].cover, "image/png" if session["book"].cover_ext == ".png" else "image/jpeg"
+                if not data:
+                    return self.reply({"error": "no cover"}, 404)
+                self.send_response(200)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
             elif url.path == "/audio" and session["out"]:
                 name = Path(parse_qs(url.query).get("f", [""])[0]).name
                 path = session["out"] / name
@@ -1867,8 +1943,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     done = files_done(session["out"], everything)
                     self.reply({"title": book.title, "author": book.author, "language": (args.lang or book.language or "en").lower(),
                                 "out": str(session["out"]).replace(str(Path.home()), "~"),
-                                "recommended": recommend((args.lang or book.language or "en").lower())["recommended"],
-                                "fits": {r["model"]: r["fit"] for r in recommend((args.lang or book.language or "en").lower())["models"]},
+                                "catalog": catalog(), "cover": bool(book.cover),
                                 "chapters": [{"n": n, "title": c.title, "minutes": round(c.chars / 900), "done": n in done,
                                               "skip": is_front_matter(c)}
                                              for n, c in enumerate(book.chapters, 1)]})
@@ -1901,12 +1976,14 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     out.mkdir(parents=True, exist_ok=True)
                     source = out / (".source" + session["epub"].suffix.lower())   # kept so the queue survives a restart
                     shutil.copy2(session["epub"], source)
+                    if book.cover:
+                        (out / f"cover{book.cover_ext}").write_bytes(book.cover)
                     with lock:
                         if any(q["out"] == str(out) and q["status"] == "running" for q in items):
                             return self.reply({"error": "This book is being read right now."}, 409)
                         items[:] = [q for q in items if not (q["out"] == str(out) and q["status"] != "done")]
                         items.append({"id": str(int(time.time() * 1000)), "title": book.title, "epub": str(source), "out": str(out),
-                                      "chapters": chapters, "model": job.get("model"), "voice": job.get("voice"),
+                                      "chapters": chapters, "model": job.get("model"), "voice": job.get("voice"), "lang": job.get("lang"),
                                       "iphone": bool(job.get("iphone")), "status": "waiting", "note": ""})
                         save_queue()
                     self.reply({"ok": True})
@@ -1967,7 +2044,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 position = sum(1 for q in items if q["status"] in ("done", "running", "error"))
                 save_queue()
             state.current = f"Book {position} of {len(items)}, {item['title']}"
-            state.kind, state.title = f"Book {position} of {len(items)}", item["title"]
+            state.kind, state.title, state.book_id = f"Book {position} of {len(items)}", item["title"], item["id"]
             state.percent, state.left, state.segments, state.now = 0, "", [], 0
             state.log(f"=== {item['title']} ===")
             status, note = "done", ""
@@ -2019,7 +2096,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
             if job["kind"] == "compare":
                 book, opts = session["book"], options(job)
                 first = min(n for n in job.get("chapters", [1]) if 1 <= n <= len(book.chapters))
-                run_compare(sample_of(book, first), (args.lang or book.language or "en").lower(), opts, session["out"])
+                run_compare(sample_of(book, first), language_for(book, opts), opts, session["out"])
             elif job["kind"] == "preview":
                 book, opts = session["book"], options(job)
                 first = min(n for n in job.get("chapters", [1]) if 1 <= n <= len(book.chapters))

@@ -7,19 +7,19 @@
 
 # book2audio
 
-**Turn an ebook into an audiobook that sounds read, in French or English, on any Apple Silicon Mac.**
+**Turn an ebook into an audiobook that sounds read, in French, English and nine other languages, on any Apple Silicon Mac.**
 
 book2audio checks your Mac and picks the voice model that fits it. A bigger Mac gets a more natural voice, a smaller one takes a lighter model. No account, no API key, nothing uploaded. Listen on your iPhone.
 
 ## Why book2audio?
 
-- **French that sounds read, not synthesized.** French books use Voxtral (4-bit) when the Mac has room for it, English books use Kokoro. You pick the voice and hear a 1-minute preview first.
+- **A voice that sounds read, not synthesized.** Books use Voxtral (4-bit) when the Mac has room for it, in French, English and seven other languages. You pick the voice and hear a 1-minute preview first.
 - **It uses the Mac's GPU.** Models run through MLX on Apple Silicon. On a MacBook Pro M6 with 32 GB, the default French model reads 2.7 times faster than real time: 82 seconds of audio in 30 seconds.
 - **A 28-hour book survives interruptions.** The position is saved after every passage. Stop, crash or reboot, then resume at the same sentence.
 - **Queue several books and leave.** They are read one after the other. The queue is kept on disk.
 
 Input: EPUB. AZW3 and MOBI work if Calibre is installed and the file has no DRM.
-Output: one `.m4a` per chapter, plus one `.m4b` audiobook with chapter markers.
+Output: one `.m4a` per chapter, plus one `.m4b` audiobook with chapter markers and the book's own cover.
 
 ## Install
 
@@ -54,20 +54,26 @@ While a book is being read, the page shows the percentage done and the time left
 
 To remove it: `uv tool uninstall book2audio` and delete `~/Applications/book2audio.app`. Audio files stay in `~/Audiobooks`, models in `~/.cache/huggingface`.
 
-At the top of the page, **Restart** stops and starts book2audio again, which is how you pick up a new version after an update: a book being read goes on where it stopped. **Quit** stops it. Starting it twice is harmless: the second time simply reopens the page.
+At the top of the page, a green light shows that book2audio is on. The page follows your Mac's light or dark appearance. The circular arrow restarts book2audio, which is how you pick up a new version after an update: a book being read goes on where it stopped. The power button turns it off; to turn it on again, open it from your Applications folder and the page reconnects by itself. Starting it twice is harmless: the second time simply reopens the page.
 
 ## Listen on the iPhone
 
 Keep "Copy the finished audiobook to iCloud Drive" ticked. When the book is finished, the `.m4b` is copied to `iCloud Drive/Audiobooks`, so it appears on your iPhone and your other Apple devices. A macOS notification tells you when a book is ready. On the phone, open it from the Files app, or import it into an audiobook player such as BookPlayer, which keeps your position and shows the chapters.
 
-## Voices
+## Languages and voices
 
-| Book language | Model | Voices |
+The language is read from the book, and you can change it in the page. For each language, book2audio offers the models that speak it and fit your Mac.
+
+| Model | Languages | Notes |
 |---|---|---|
-| French | Voxtral 4-bit (Mistral), natural, 2.7x real time. The full-size model is also offered: same voices, about 2.5x slower | `fr_female` (default), `fr_male` |
-| English | Kokoro, small and fast | `af_heart` (default), `af_bella`, `am_michael`, `am_adam`, `bf_emma`, `bm_george` |
+| Voxtral 4-bit (Mistral) | French, English, Spanish, German, Italian, Portuguese, Dutch, Hindi, Arabic | The default wherever it speaks the language. Natural, 2.7x real time on an M6. A full-size version is also offered: same voices, about 2.5x slower |
+| Kokoro | English, French, Spanish, Italian, Portuguese, Hindi, Japanese, Chinese | Small and fast. The default for Japanese and Chinese |
+| Pocket TTS (Kyutai) | French, English, German, Spanish, Italian, Portuguese | Runs on the CPU, for Macs with little memory |
+| Kyutai TTS 1.6B | French, English | Experimental: not confirmed on a real Mac yet |
 
-Two more options install themselves in a separate environment the first time you pick them: Pocket TTS (Kyutai), which runs on the CPU, and Kyutai TTS 1.6B, built for French and English. Kyutai TTS is experimental: it has not been confirmed on a real Mac yet.
+French is the language tested most. English and the others use the same models and the same code, but have had less listening.
+
+Pocket TTS and Kyutai TTS install themselves in a separate environment the first time you pick them. Voxtral 4-bit is a 2.5 GB download (8 GB for the full size) and its licence is non-commercial (CC BY-NC 4.0): fine for listening to your own books, not for selling audio.
 
 **Compare models.** The "Compare models" button reads the same one-minute passage with each model and shows, for each, the audio to listen to and its measured speed on your Mac. From the terminal: `book2audio book.epub --compare`.
 
