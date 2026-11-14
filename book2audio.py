@@ -5,13 +5,15 @@
 #   "mlx-audio; sys_platform == 'darwin' and platform_machine == 'arm64'",
 #   "misaki[en]; sys_platform == 'darwin' and platform_machine == 'arm64'",
 #   "mistral-common[audio]; sys_platform == 'darwin' and platform_machine == 'arm64'",   # needed by Voxtral
+#   "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl ; sys_platform == 'darwin' and platform_machine == 'arm64'",   # Kokoro's English needs it, and cannot fetch it by itself
+#   "mobi",                    # reads Kindle files (AZW3, MOBI) without Calibre
 #   "beautifulsoup4",
 #   "imageio-ffmpeg",          # brings its own ffmpeg, so nothing else has to be installed
 #   "soundfile",
 #   "numpy",
 # ]
 # ///
-"""book2audio: turn an ebook (EPUB, or AZW3/MOBI via Calibre) into one audio
+"""book2audio: turn an ebook (EPUB, AZW3 or MOBI without DRM) into one audio
 file per chapter, using a local text-to-speech model on Apple Silicon.
 
     uv run book2audio.py book.epub --list        # see the chapters
@@ -238,15 +240,78 @@ def read_epub(path: Path, min_chars: int = 500) -> Book:
     return Book(meta("title", path.stem), meta("creator", ""), meta("language", "en").lower(), chapters, cover, cover_ext)
 
 
+def html_to_epub(html: Path, out: Path, fallback_title: str) -> None:
+    """Old MOBI files unpack to one long HTML page. Cut it at its page breaks and wrap it as an EPUB."""
+    raw = html.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("cp1252", errors="replace")
+    opf = next(iter(html.parent.glob("*.opf")), None)
+    meta = opf.read_text(encoding="utf-8", errors="replace") if opf else ""
+
+    def field(name: str, default: str = "") -> str:
+        found = re.search(rf"<dc:{name}[^>]*>(.*?)</dc:{name}>", meta, re.S | re.I)
+        return re.sub(r"\s+", " ", found.group(1)).strip() if found else default
+
+    body = re.search(r"<body[^>]*>(.*)</body>", text, re.S | re.I)
+    parts = [x for x in re.split(r"<mbp:pagebreak\s*/?>", body.group(1) if body else text, flags=re.I)
+             if re.search(r"\w", re.sub(r"<[^>]+>", " ", x))]
+    names = [f"part{i:04d}.xhtml" for i in range(1, len(parts) + 1)]
+    esc = lambda t: t.replace("&", "&amp;").replace("<", "&lt;")
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        z.writestr("META-INF/container.xml", '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                   '<rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+        z.writestr("book.opf", '<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+                   '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+                   f'<dc:title>{esc(field("title", fallback_title))}</dc:title><dc:creator>{esc(field("creator"))}</dc:creator>'
+                   f'<dc:language>{esc(field("language", "en"))}</dc:language></metadata><manifest>'
+                   + "".join(f'<item id="p{i}" href="{n}" media-type="application/xhtml+xml"/>' for i, n in enumerate(names))
+                   + "</manifest><spine>" + "".join(f'<itemref idref="p{i}"/>' for i in range(len(names))) + "</spine></package>")
+        for name, part in zip(names, parts):
+            z.writestr(name, f"<html><head><title></title></head><body>{part}</body></html>")
+
+
+def kindle_to_epub(path: Path, out: Path) -> None:
+    """AZW3 and MOBI without Calibre, with the KindleUnpack code of the 'mobi' package."""
+    try:
+        import mobi
+        from loguru import logger
+        logger.disable("mobi")                       # it is talkative
+    except ImportError:
+        sys.exit(f"{path.suffix} files need Calibre to be converted first.\nInstall it with:  brew install --cask calibre")
+    folder = ""
+    try:
+        folder, found = mobi.extract(str(path))
+        found = Path(found)
+        if found.suffix == ".epub":
+            shutil.copy2(found, out)
+        elif found.suffix == ".html":
+            html_to_epub(found, out, path.stem)
+        else:
+            sys.exit(f"{path.name} holds pages as images or a PDF, not text that can be read aloud.")
+    except SystemExit:
+        raise
+    except Exception as e:
+        drm = re.search(r"drm|encrypt", str(e), re.I)
+        sys.exit(f"{path.name} is DRM-protected and cannot be read." if drm else
+                 f"{path.name} could not be opened ({type(e).__name__}: {str(e)[:120]}). Converting it to EPUB with Calibre may work.")
+    finally:
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
+
+
 def to_epub(path: Path, workdir: Path) -> Path:
-    """EPUB is used as is. Kindle formats are converted with Calibre."""
+    """EPUB is used as is. Kindle formats are converted: with Calibre when it is installed, without it otherwise."""
     if path.suffix.lower() == ".epub":
         return path
-    tool = shutil.which("ebook-convert") or "/Applications/calibre.app/Contents/MacOS/ebook-convert"
-    if not Path(tool).exists():
-        sys.exit(f"{path.suffix} files need Calibre to be converted first.\n"
-                 "Install it with:  brew install --cask calibre")
     out = workdir / (path.stem + ".epub")
+    tool = shutil.which("ebook-convert") or "/Applications/calibre.app/Contents/MacOS/ebook-convert"
+    if not Path(tool).exists() or os.environ.get("BOOK2AUDIO_NO_CALIBRE"):
+        print(f"Reading {path.name}...")
+        kindle_to_epub(path, out)
+        return out
     print(f"Converting {path.name} to EPUB with Calibre...")
     result = subprocess.run([tool, str(path), str(out)], capture_output=True, text=True)
     if result.returncode != 0 or not out.exists():
@@ -1473,7 +1538,7 @@ def open_book(path: Path, min_chars: int) -> Book:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Turn an ebook into one audio file per chapter, with a local voice model.")
-    ap.add_argument("book", type=Path, nargs="?", help="EPUB file (AZW3 / MOBI / AZW work if Calibre is installed and the file has no DRM)")
+    ap.add_argument("book", type=Path, nargs="?", help="EPUB, AZW3 or MOBI file without DRM")
     ap.add_argument("--ui", action="store_true", help="open the simple web page instead of using the command line")
     ap.add_argument("-o", "--out", type=Path, help="output folder (default: ~/Audiobooks/<book title>)")
     ap.add_argument("--list", action="store_true", help="show the chapters and stop")

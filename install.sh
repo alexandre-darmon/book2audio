@@ -72,6 +72,13 @@ if [ "$(uname -s)" = "Darwin" ] && [ -z "${BOOK2AUDIO_NO_APP:-}" ]; then
 fi
 
 echo
-echo "Done. Open a new Terminal window and type:  book2audio"
+echo "Done. A page opens in your browser. The voice model downloads the first time you use it."
+echo "Next time, open a new Terminal window and type:  book2audio"
 [ -z "$APP_NOTE" ] || echo "$APP_NOTE"
-echo "A page opens in your browser. The voice model downloads the first time you use it."
+
+# Start it right away: the command is not on the PATH of this window yet, so use its full path.
+BIN="$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
+if [ -z "${BOOK2AUDIO_NO_START:-}" ] && [ -x "$BIN/book2audio" ]; then
+  echo
+  exec "$BIN/book2audio"
+fi

@@ -18,7 +18,7 @@ book2audio checks your Mac and picks the voice model that fits it. A bigger Mac 
 - **A 28-hour book survives interruptions.** The position is saved after every passage. Stop, crash or reboot, then resume at the same sentence.
 - **Queue several books and leave.** They are read one after the other. The queue is kept on disk.
 
-Input: EPUB. AZW3 and MOBI work if Calibre is installed and the file has no DRM.
+Input: EPUB, AZW3 and MOBI, as long as the file has no DRM. Nothing else to install.
 Output: one `.m4a` per chapter, plus one `.m4b` audiobook with chapter markers and the book's own cover.
 
 ## Install
