@@ -117,7 +117,16 @@ French, one minute of the same text, measured on a MacBook Pro M6 with 32 GB:
 | Voxtral, full size | 1.05x | 18.7 | GPU | about 9 GB | 16 GB if other apps are closed, 24 GB and up |
 | Pocket TTS | 5.38x | 104.1 | CPU | about 1.5 GB | 8 GB and up |
 
-2x real time means one hour of audio takes half an hour to create. Memory figures are estimates. Kyutai TTS and Kokoro are not measured yet.
+2x real time means one hour of audio takes half an hour to create. Memory figures are estimates.
+
+On a MacBook Pro M1 with 8 GB, the smallest Mac it was tried on, book2audio picks the model itself. These are first runs on one short chapter each, model loading included, so longer chapters should do a little better:
+
+| Book | Model picked | Speed |
+|---|---|---|
+| French | Pocket TTS | 0.6x to 0.8x real time |
+| English | Kokoro | 2.4x |
+
+Below 1x, a book takes longer to create than to listen to: a 10 hour French book needs 13 to 17 hours on that Mac, so let it run overnight. It can be stopped and resumed. Kyutai TTS is not measured yet.
 
 Run it on your own Mac:
 
