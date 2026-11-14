@@ -1295,132 +1295,218 @@ def main(argv: list[str] | None = None) -> int:
 # --------------------------------------------------------------------------
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>book2audio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='.5' y='.5' width='63' height='63' rx='13' fill='%23111113' stroke='%2326262B'/%3E%3Cpath d='M13 30V34M22 26V38M42 26V38M51 30V34' fill='none' stroke='%23F7F7F7' stroke-width='6' stroke-linecap='square'/%3E%3Crect x='28' y='20' width='8' height='24' fill='%238C52EE'/%3E%3C/svg%3E">
 <script>try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
-<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root { color-scheme: dark;
     --bg:#0a0a0c; --panel:#111113; --raise:#17171a; --line:#232327; --ink:#ededef; --soft:#8b8b93; --faint:#5c5c66;
-    --accent:#8C52EE; --accent-ink:#b392f5; --tile:#111113; --tile-line:#26262B; --glyph:#F7F7F7; --danger:#f2777a; }
+    --accent:#8C52EE; --accent-ink:#b392f5; --accent-wash:rgba(140,82,238,.14); --tile:#111113; --tile-line:#26262B; --glyph:#F7F7F7;
+    --danger:#f2777a; --ok:#58c98b; }
   :root[data-theme="light"] { color-scheme: light;
-    --bg:#ffffff; --panel:#fafafa; --raise:#f4f4f5; --line:#E3E3E3; --ink:#0A0A0A; --soft:#62626b; --faint:#9a9aa3;
-    --accent:#8C52EE; --accent-ink:#7a3fe0; --tile:#F7F7F7; --tile-line:#E3E3E3; --glyph:#0A0A0A; --danger:#c62f33; }
+    --bg:#ffffff; --panel:#fafafa; --raise:#f1f1f3; --line:#E3E3E3; --ink:#0A0A0A; --soft:#62626b; --faint:#9a9aa3;
+    --accent:#8C52EE; --accent-ink:#7a3fe0; --accent-wash:rgba(140,82,238,.10); --tile:#F7F7F7; --tile-line:#E3E3E3; --glyph:#0A0A0A;
+    --danger:#c62f33; --ok:#1f8f55; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.55 Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
-         -webkit-font-smoothing:antialiased; font-feature-settings:"cv11","ss01"; }
-  .mono, .m, #log, .pos, #total { font-family:"Geist Mono", "SF Mono", ui-monospace, Menlo, monospace; font-variant-numeric:tabular-nums; }
-  header { border-bottom:1px solid var(--line); }
-  header > div { max-width:760px; margin:0 auto; padding:14px 24px; display:flex; align-items:center; gap:10px; }
-  header svg { display:block; }
-  .word { font-weight:600; letter-spacing:-0.02em; font-size:15px; }
-  .tag { color:var(--soft); font-size:13px; margin-left:6px; }
-  #theme { margin-left:auto; }
-  #steps { list-style:none; counter-reset:s; display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; padding:0; margin:0 0 16px; }
-  #steps li { counter-increment:s; border:1px solid var(--line); border-radius:8px; padding:14px 16px; color:var(--soft); font-size:13px; }
-  #steps li::before { content:counter(s); display:block; font-family:"Geist Mono", "SF Mono", ui-monospace, Menlo, monospace; font-size:12px; color:var(--accent-ink); margin-bottom:6px; }
-  #steps b { display:block; color:var(--ink); font-weight:600; }
-  .tagk { color:var(--faint); font-size:11px; margin-left:8px; border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
-  @media (max-width:560px) { #steps { grid-template-columns:1fr; } .tag { display:none; } }
-  main { max-width:760px; margin:0 auto; padding:32px 24px 96px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:20px; margin-bottom:16px; }
-  .label { font-size:12px; color:var(--soft); letter-spacing:.02em; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
-  .label::before { content:""; width:3px; height:12px; background:var(--accent); }
-  h2 { font-size:18px; line-height:1.3; font-weight:600; letter-spacing:-0.02em; margin:0; }
-  .sub { color:var(--soft); font-size:13px; margin:2px 0 0; }
-  #drop { border-style:dashed; text-align:center; padding:40px 20px; cursor:pointer; color:var(--soft); transition:border-color .15s, color .15s, background .15s; }
-  #drop strong { color:var(--ink); font-weight:500; display:block; margin-bottom:2px; }
-  #drop:hover, #drop.over { border-color:var(--accent); color:var(--ink); background:var(--raise); }
-  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-top:16px; }
-  label { font-size:12px; color:var(--soft); display:block; }
-  label.check { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink); height:32px; }
-  input[type=checkbox] { accent-color:var(--accent); width:14px; height:14px; margin:0; }
-  select { font:inherit; font-size:13px; height:32px; padding:0 28px 0 10px; border:1px solid var(--line); border-radius:6px; background:var(--raise); color:var(--ink); margin-top:4px; }
-  button { font:inherit; font-size:13px; font-weight:500; height:32px; padding:0 12px; border-radius:6px; border:1px solid var(--line); background:var(--raise); color:var(--ink); cursor:pointer; transition:background .15s, border-color .15s; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Helvetica Neue", sans-serif;
+         -webkit-font-smoothing:antialiased; font-variant-numeric:tabular-nums; }
+  .hide { display:none !important; }
+  .soft { color:var(--soft); }
+  a { color:var(--accent-ink); cursor:pointer; text-decoration:none; } a:hover { text-decoration:underline; }
+  h2, h3 { margin:0; font-weight:650; letter-spacing:-0.015em; }
+  h2 { font-size:20px; line-height:1.25; } h3 { font-size:14px; }
+
+  /* Top bar */
+  header { border-bottom:1px solid var(--line); position:sticky; top:0; background:color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter:blur(10px); z-index:5; }
+  header > div { max-width:780px; margin:0 auto; padding:12px 24px; display:flex; align-items:center; gap:10px; }
+  header svg { display:block; flex:none; }
+  .word { font-weight:650; letter-spacing:-0.02em; font-size:15px; }
+  #mac { color:var(--soft); font-size:13px; margin-left:6px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bar-actions { margin-left:auto; display:flex; gap:2px; flex:none; }
+
+  /* Controls */
+  button { font:inherit; font-size:13px; font-weight:500; height:32px; padding:0 12px; border-radius:6px; border:1px solid var(--line); background:var(--raise); color:var(--ink); cursor:pointer;
+           transition:background .12s, border-color .12s, color .12s; white-space:nowrap; }
   button:hover:not(:disabled) { border-color:var(--faint); }
-  button.main { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.main { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
   button.main:hover:not(:disabled) { background:#7a3fe0; border-color:#7a3fe0; }
-  button.ghost { background:transparent; }
+  button.quiet { background:transparent; border-color:transparent; color:var(--soft); padding:0 10px; }
+  button.quiet:hover:not(:disabled) { background:var(--raise); color:var(--ink); border-color:transparent; }
   button:disabled { opacity:.4; cursor:default; }
-  button:focus-visible, select:focus-visible, #drop:focus-visible, a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-  #chapters { max-height:300px; overflow:auto; margin-top:12px; border:1px solid var(--line); border-radius:6px; background:var(--bg); }
-  .ch, .q { display:flex; gap:10px; padding:8px 12px; border-bottom:1px solid var(--line); align-items:center; font-size:13px; }
-  .ch { color:var(--ink); cursor:pointer; } .ch:last-child, .q:last-child { border-bottom:0; } .ch:hover { background:var(--raise); }
-  .ch span.t, .q span.t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .m { color:var(--soft); font-size:12px; white-space:nowrap; }
-  .ch.done span.t { color:var(--soft); } .ch.done span.t::after { content:"done"; color:var(--accent-ink); font-size:11px; margin-left:8px; border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
-  #qlist { border:1px solid var(--line); border-radius:6px; background:var(--bg); }
-  .q .pos { color:var(--faint); width:1.6em; font-size:12px; }
-  .q.running span.t { font-weight:600; } .q.running .pos { color:var(--accent-ink); } .q.done span.t { color:var(--soft); } .q.error .m { color:var(--danger); }
-  .links { font-size:12px; margin-top:16px; display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
-  .links a, .q a { color:var(--accent-ink); cursor:pointer; font-size:12px; } .links a:hover, .q a:hover { text-decoration:underline; }
-  #total { color:var(--soft); margin-left:auto; font-size:12px; }
-  #cmprows { border:1px solid var(--line); border-radius:6px; background:var(--bg); }
-  .c { display:grid; grid-template-columns:130px 1fr; gap:4px 14px; padding:12px; border-bottom:1px solid var(--line); align-items:center; font-size:13px; }
-  .c:last-child { border-bottom:0; } .c b { font-weight:600; } .c audio { margin:0; height:32px; } .c .m { white-space:normal; } .c .bad { color:var(--danger); }
-  #work { margin-top:16px; border-top:1px solid var(--line); padding-top:16px; }
-  #state { font-weight:600; font-size:13px; margin-bottom:14px; }
-  .cap { display:flex; justify-content:space-between; gap:12px; font-size:13px; } .cap span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .cap.soft { font-size:12px; color:var(--soft); margin-bottom:14px; } #chpct { font-size:13px; }
-  #bar { height:10px; background:var(--line); border-radius:3px; overflow:hidden; margin:8px 0 10px; } #bar div { height:100%; width:0; background:var(--accent); transition:width .4s; }
-  #segs { display:flex; gap:2px; height:6px; margin-bottom:8px; }
-  #segs div { flex:1 1 0; min-width:3px; background:var(--line); border-radius:1px; overflow:hidden; }
-  #segs i { display:block; height:100%; width:0; background:var(--accent); transition:width .4s; }
-  #segs div.now { outline:1px solid var(--accent-ink); outline-offset:1px; }
-  #log { font-size:12px; line-height:1.6; color:var(--soft); white-space:pre-wrap; max-height:140px; overflow:auto; margin:0; }
-  #err { color:var(--danger); font-size:13px; min-height:0; margin:0 0 12px; } #err:empty { display:none; }
-  audio { width:100%; margin-top:14px; height:36px; } .hide { display:none !important; }
+  button:focus-visible, select:focus-visible, a:focus-visible, #drop:focus-visible, .ch:focus-within { outline:2px solid var(--accent); outline-offset:2px; }
+  select { font:inherit; font-size:13px; height:32px; padding:0 28px 0 10px; border:1px solid var(--line); border-radius:6px; background:var(--raise); color:var(--ink); max-width:100%; }
+  input[type=checkbox] { accent-color:var(--accent); width:14px; height:14px; margin:0; flex:none; }
+  label.field { display:grid; gap:4px; font-size:12px; color:var(--soft); min-width:0; }
+  label.check { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; }
+
+  main { max-width:780px; margin:0 auto; padding:28px 24px 96px; display:grid; grid-template-columns:minmax(0, 1fr); gap:16px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:20px; }
+  .panel > h3 { margin-bottom:12px; }
+
+  /* Now reading: the one loud element of the page */
+  #now { padding:24px; border-color:color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .now-top { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; }
+  .now-top > div:first-child { min-width:0; }
+  #nowkind { font-size:13px; color:var(--soft); }
+  #nowtitle { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #pct { font-size:44px; line-height:1; font-weight:650; letter-spacing:-0.04em; flex:none; }
+  #pct small { font-size:18px; font-weight:500; color:var(--soft); letter-spacing:0; margin-left:2px; }
+  #left { margin-top:6px; color:var(--soft); font-size:13px; }
+  /* The chapters as a row of bars, like the mark: height is the chapter's length, the fill is how much is read */
+  #segs { display:flex; align-items:flex-end; gap:3px; height:72px; margin:22px 0 10px; }
+  #segs div { flex:1 1 0; max-width:34px; min-width:3px; background:var(--line); border-radius:2px; position:relative; overflow:hidden; }
+  #segs i { position:absolute; left:0; right:0; bottom:0; height:0; background:var(--accent); transition:height .5s; }
+  #segs div.now { background:var(--accent-wash); box-shadow:0 0 0 1px var(--accent-ink); }
+  .now-line { display:flex; justify-content:space-between; gap:16px; font-size:13px; }
+  .now-line span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #chbar { height:4px; background:var(--line); border-radius:2px; overflow:hidden; margin-top:8px; } #chbar div { height:100%; width:0; background:var(--accent); transition:width .4s; }
+  .now-actions { display:flex; align-items:center; gap:8px; margin-top:18px; }
+  #log { font:12px/1.6 "SF Mono", ui-monospace, Menlo, monospace; color:var(--soft); white-space:pre-wrap; max-height:150px; overflow:auto; margin:14px 0 0; padding:12px; background:var(--bg); border:1px solid var(--line); border-radius:6px; }
+  #nowerr { color:var(--danger); font-size:13px; margin-top:12px; }
+
+  /* Queue */
+  #qlist { border:1px solid var(--line); border-radius:8px; background:var(--bg); overflow:hidden; }
+  .q { display:grid; grid-template-columns:20px minmax(0, 1fr) auto; gap:4px 12px; padding:12px 14px; border-bottom:1px solid var(--line); align-items:center; }
+  .q:last-child { border-bottom:0; }
+  .q .dot { width:8px; height:8px; border-radius:50%; background:var(--faint); justify-self:center; }
+  .q.running .dot { background:var(--accent); box-shadow:0 0 0 4px var(--accent-wash); } .q.done .dot { background:var(--ok); } .q.error .dot { background:var(--danger); }
+  .q .t { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .q .links { display:flex; gap:14px; font-size:13px; }
+  .q .meta { grid-column:2 / 4; display:flex; align-items:center; gap:12px; font-size:13px; color:var(--soft); }
+  .q .mini { flex:1; max-width:160px; height:4px; background:var(--line); border-radius:2px; overflow:hidden; } .q .mini i { display:block; height:100%; background:var(--accent); } .q.done .mini i { background:var(--ok); }
+  .q.error .note { color:var(--danger); }
+  .q .hint { grid-column:2 / 4; font-size:13px; color:var(--soft); }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:14px; }
+
+  /* Add a book */
+  #drop { border:1px dashed var(--faint); border-radius:10px; text-align:center; padding:44px 20px; cursor:pointer; color:var(--soft); transition:border-color .12s, background .12s; }
+  #drop strong { display:block; color:var(--ink); font-weight:600; font-size:15px; margin-bottom:2px; }
+  #drop:hover, #drop.over { border-color:var(--accent); background:var(--accent-wash); }
+  #drop.small { padding:14px 20px; } #drop.small strong { font-size:13px; display:inline; margin:0; } #drop.small span { display:none; }
+  #steps { list-style:none; counter-reset:s; display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; padding:0; margin:0; }
+  #steps li { counter-increment:s; padding:0 4px; color:var(--soft); font-size:13px; }
+  #steps li::before { content:counter(s); display:grid; place-items:center; width:22px; height:22px; border-radius:50%; background:var(--raise); border:1px solid var(--line); color:var(--ink); font-size:12px; font-weight:600; margin-bottom:8px; }
+  #steps b { display:block; color:var(--ink); font-weight:600; }
+  #err { color:var(--danger); font-size:13px; margin:0; } #err:empty { display:none; }
+
+  /* The book being set up */
+  .book-head { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
+  .book-head > div { min-width:0; }
+  #meta { color:var(--soft); font-size:13px; margin-top:2px; }
+  .settings { display:grid; grid-template-columns:minmax(0, 1.4fr) minmax(0, 1fr); gap:12px; margin-top:18px; }
+  #summary { margin-top:16px; padding:12px 14px; border-radius:8px; background:var(--raise); font-size:13px; }
+  #summary b { font-weight:600; }
+  .pick { display:flex; gap:14px; align-items:center; margin-top:18px; font-size:13px; flex-wrap:wrap; }
+  .pick h3 { margin-right:auto; }
+  #chapters { max-height:308px; overflow:auto; margin-top:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+  .ch { display:grid; grid-template-columns:14px 26px minmax(0, 1fr) auto; gap:10px; padding:8px 12px; border-bottom:1px solid var(--line); align-items:center; font-size:13px; cursor:pointer; }
+  .ch:last-child { border-bottom:0; } .ch:hover { background:var(--raise); }
+  .ch .n { color:var(--faint); text-align:right; } .ch .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .ch .m { color:var(--soft); }
+  .ch.done .t, .ch.skip .t { color:var(--soft); }
+  .tagk { color:var(--soft); font-size:11px; margin-left:8px; border:1px solid var(--line); border-radius:4px; padding:1px 6px; }
+  .ch.done .tagk { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 40%, var(--line)); }
+  .icloud { display:flex; align-items:center; gap:8px; margin-top:14px; }
+  .info { position:relative; display:inline-flex; }
+  .i { width:18px; height:18px; padding:0; border-radius:50%; font-size:11px; font-weight:700; font-style:italic; font-family:Georgia, serif; line-height:1; color:var(--soft); background:transparent; border-color:var(--faint); }
+  #tip { position:absolute; left:50%; bottom:calc(100% + 10px); transform:translateX(-50%); width:300px; padding:12px 14px; border-radius:8px; background:var(--ink); color:var(--bg);
+         font-size:13px; line-height:1.45; opacity:0; visibility:hidden; transition:opacity .12s; z-index:6; pointer-events:none; }
+  #tip::after { content:""; position:absolute; left:50%; top:100%; margin-left:-6px; border:6px solid transparent; border-top-color:var(--ink); }
+  .info:hover #tip, .info:focus-within #tip { opacity:1; visibility:visible; }
+  @media (max-width:640px) { #tip { position:fixed; left:16px; right:16px; bottom:16px; width:auto; transform:none; } #tip::after { display:none; } }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; align-items:center; }
+  .actions .main { margin-left:auto; }
+  audio { width:100%; height:36px; margin-top:14px; }
+  #cmprows { border:1px solid var(--line); border-radius:8px; background:var(--bg); margin-top:10px; }
+  .c { display:grid; grid-template-columns:130px minmax(0, 1fr); gap:6px 14px; padding:12px 14px; border-bottom:1px solid var(--line); align-items:center; font-size:13px; }
+  .c:last-child { border-bottom:0; } .c b { font-weight:600; } .c audio { margin:0; height:32px; grid-column:2; } .c .bad { color:var(--danger); } .c .m { color:var(--soft); }
+
+  #toast { position:fixed; left:50%; bottom:28px; transform:translate(-50%, 20px); background:var(--ink); color:var(--bg); padding:9px 16px; border-radius:8px; font-size:13px; font-weight:500;
+           opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; z-index:10; }
+  #toast.on { opacity:1; transform:translate(-50%, 0); }
+  .center { max-width:480px; margin:72px auto; text-align:center; } .center p { color:var(--soft); margin:8px 0 0; }
+
+  @media (max-width:640px) {
+    header > div, main { padding-left:16px; padding-right:16px; } #mac { display:none; }
+    .settings, #steps { grid-template-columns:1fr; } #pct { font-size:34px; } .panel, #now { padding:16px; } #nowtitle { white-space:normal; }
+    .now-line { flex-wrap:wrap; gap:2px 16px; } .now-actions { flex-wrap:wrap; } .actions .main { margin-left:0; flex:1 1 100%; order:-1; }
+    .q { grid-template-columns:20px minmax(0, 1fr); } .q .links { grid-column:2; } .q .meta, .q .hint { grid-column:2; }
+  }
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
 </style></head><body>
-<header><div><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="28" height="28" role="img" aria-label="book2audio"><rect x="0.5" y="0.5" width="63" height="63" rx="13" fill="var(--tile)" stroke="var(--tile-line)"/><path d="M13 30 V34 M22 26 V38 M42 26 V38 M51 30 V34" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="28" y="20" width="8" height="24" fill="#8C52EE"/></svg><span class="word">book2audio</span><span class="tag" id="mac">Ebooks in, audiobooks out. All on this Mac.</span>
-<button id="theme" class="ghost" aria-label="Switch between dark and light theme">Light</button>
-<button id="quit" class="ghost" title="Stop book2audio. Everything read so far is kept.">Quit</button></div></header>
-<div id="gone" class="hide"><div class="card" style="max-width:520px;margin:80px auto;text-align:center"><h2>book2audio has quit</h2><p class="sub">Everything read so far is kept, and the queue will be there next time. You can close this tab.</p></div></div>
+<header><div>
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="28" height="28" role="img" aria-label="book2audio"><rect x="0.5" y="0.5" width="63" height="63" rx="13" fill="var(--tile)" stroke="var(--tile-line)"/><path d="M13 30 V34 M22 26 V38 M42 26 V38 M51 30 V34" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="28" y="20" width="8" height="24" fill="#8C52EE"/></svg>
+  <span class="word">book2audio</span><span id="mac"></span>
+  <span class="bar-actions">
+    <button id="theme" class="quiet" aria-label="Switch between dark and light theme">Light</button>
+    <button id="restart" class="quiet" title="Stop and start again, for example after an update. A book being read goes on where it stopped.">Restart</button>
+    <button id="quit" class="quiet" title="Stop book2audio. Everything read so far is kept.">Quit</button>
+  </span>
+</div></header>
+
+<div id="gone" class="hide center"><h2>book2audio has quit</h2><p>Everything read so far is kept, and the queue will be there next time. You can close this tab.</p></div>
+<div id="back" class="hide center"><h2>Restarting</h2><p>This page comes back by itself in a few seconds. Nothing read so far is lost.</p></div>
+
 <main>
-
-<div id="queue" class="card hide">
-  <p class="label">Queue</p>
-  <div id="qlist"></div>
-  <div class="row">
-    <button id="qstart" class="main">Start the queue</button>
-    <button id="stop" class="hide">Stop</button>
-    <span id="qnote" class="m"></span>
-  </div>
-  <div id="work" class="hide">
-    <div id="state"></div>
-    <div class="cap"><span id="chname"></span><span id="chpct" class="mono"></span></div>
-    <div id="bar" role="progressbar" aria-label="Current chapter"><div></div></div>
+  <section id="now" class="panel hide" aria-live="polite">
+    <div class="now-top">
+      <div><div id="nowkind"></div><h2 id="nowtitle"></h2></div>
+      <div id="pct"></div>
+    </div>
+    <div id="left"></div>
     <div id="segs" aria-label="Chapters of this book"></div>
-    <div class="cap soft"><span id="segnote"></span><span id="detail" class="mono"></span></div>
-    <div class="links" style="margin-top:0"><a id="more">Show details</a></div>
+    <div class="now-line"><span id="chname"></span><span id="chpct" class="soft"></span></div>
+    <div id="chbar" role="progressbar" aria-label="Current chapter" aria-valuemin="0" aria-valuemax="100"><div></div></div>
+    <div id="nowerr" class="hide"></div>
+    <div class="now-actions">
+      <button id="stop">Pause</button>
+      <span id="segnote" class="soft" style="font-size:13px"></span>
+      <a id="more" style="margin-left:auto;font-size:13px">Show details</a>
+    </div>
     <pre id="log" class="hide"></pre>
-  </div>
-</div>
+  </section>
 
-<div id="drop" class="card" tabindex="0" role="button"><strong>Drop an EPUB here, or click to choose one</strong>AZW3 and MOBI work if Calibre is installed</div>
-<ol id="steps"><li><b>Drop a book</b>EPUB without DRM</li><li><b>Hear the voice</b>A 1-minute preview</li><li><b>Queue it and leave</b>It reads chapter by chapter</li></ol>
-<input id="file" type="file" accept=".epub,.azw3,.azw,.mobi" class="hide">
-<p id="err"></p>
+  <section id="queue" class="panel hide">
+    <h3>Queue</h3>
+    <div id="qlist"></div>
+    <div class="row">
+      <button id="qstart" class="main">Start reading</button>
+      <span id="qnote" class="soft" style="font-size:13px"></span>
+    </div>
+  </section>
 
-<div id="book" class="card hide">
-  <p class="label">Book</p>
-  <h2 id="title"></h2><div id="meta" class="sub mono"></div>
-  <div class="row">
-    <div><label for="model">Voice model</label><select id="model"><option value="voxtral-4bit" data-label="Natural (Voxtral 4-bit)"></option><option value="voxtral" data-label="Natural, full size (Voxtral, slower)"></option><option value="kyutai" data-label="Kyutai TTS (experimental)"></option><option value="pocket" data-label="Light, on the CPU (Pocket TTS)"></option><option value="kokoro" data-label="Fast (Kokoro)"></option></select></div>
-    <div><label for="voice">Voice</label><select id="voice"></select></div>
-    <label class="check"><input type="checkbox" id="iphone" checked> Copy to iCloud Drive for the iPhone</label>
-  </div>
-  <div class="links"><a id="all">Select all chapters</a><a id="none">Select none</a><a id="todo">Only chapters not done</a><span id="total"></span></div>
-  <div id="chapters"></div>
-  <div class="row">
-    <button id="preview">1-minute preview</button>
-    <button id="compare">Compare models</button>
-    <button id="add" class="main">Add to the queue</button>
-    <button id="folder" class="ghost">Open folder</button>
-  </div>
-  <audio id="player" controls class="hide"></audio>
-  <div id="cmp" class="hide"><p class="label" style="margin-top:20px">Same passage, each model, timed on this Mac</p><div id="cmprows"></div></div>
-</div>
+  <div id="drop" tabindex="0" role="button"><strong>Drop an ebook here, or click to choose one</strong><span>EPUB without DRM. AZW3 and MOBI work if Calibre is installed.</span></div>
+  <input id="file" type="file" accept=".epub,.azw3,.azw,.mobi" class="hide">
+  <p id="err" role="alert"></p>
+  <ol id="steps"><li><b>Drop a book</b>It stays on this Mac.</li><li><b>Hear the voice</b>One minute, before you commit.</li><li><b>Queue it and leave</b>It reads chapter by chapter and can be paused at any time.</li></ol>
+
+  <section id="book" class="panel hide">
+    <div class="book-head">
+      <div><h2 id="title"></h2><div id="meta"></div></div>
+      <button id="closebook" class="quiet" aria-label="Close this book">Close</button>
+    </div>
+    <div class="settings">
+      <label class="field">Voice model<select id="model"><option value="voxtral-4bit" data-label="Natural (Voxtral 4-bit)"></option><option value="voxtral" data-label="Natural, full size (Voxtral, slower)"></option><option value="kyutai" data-label="Kyutai TTS (experimental)"></option><option value="pocket" data-label="Light, on the CPU (Pocket TTS)"></option><option value="kokoro" data-label="Fast (Kokoro)"></option></select></label>
+      <label class="field">Voice<select id="voice"></select></label>
+    </div>
+    <div id="summary"></div>
+    <div class="pick"><h3>Chapters</h3><a id="all">All chapters</a><a id="todo">Only those not done</a><a id="none">None</a></div>
+    <div id="chapters"></div>
+    <div class="icloud"><label class="check"><input type="checkbox" id="iphone" checked> Copy the finished audiobook to iCloud Drive</label>
+      <span class="info"><button type="button" class="i" aria-label="What does this do?" aria-describedby="tip">i</button>
+        <span id="tip" role="tooltip">When the book is finished, its audiobook file (.m4b) is copied to iCloud Drive, in a folder named Audiobooks. From there it appears on your iPhone and your other Apple devices: open the Files app, then iCloud Drive, then Audiobooks. The original stays on this Mac.</span></span></div>
+    <div class="actions">
+      <button id="preview">Play a 1-minute preview</button>
+      <button id="compare">Compare models</button>
+      <button id="folder" class="quiet">Open folder</button>
+      <button id="add" class="main">Add to the queue</button>
+    </div>
+    <audio id="player" controls class="hide"></audio>
+    <div id="cmp" class="hide"><h3 style="margin-top:20px">Same passage, each model, timed on this Mac</h3><div id="cmprows"></div></div>
+  </section>
 </main>
+<div id="toast" role="status"></div>
+
 <script>
 const $ = id => document.getElementById(id);
 const VOX = { fr:["fr_female","fr_male"], en:["casual_female","casual_male","cheerful_female","neutral_female","neutral_male"],
@@ -1429,146 +1515,188 @@ const VOICES = { voxtral: VOX, "voxtral-4bit": VOX,
                  kyutai: { fr:["cml-tts/fr/10087_11650_000028-0002_enhanced.wav"], en:["expresso/ex03-ex01_happy_001_channel1_334s.wav"] },
                  pocket: { fr:["estelle"], en:["alba","marius","cosette","jane","george"], de:["juergen"], es:["lola"], it:["giovanni"], pt:["rafael"] },
                  kokoro: { fr:["ff_siwis"], en:["af_heart","af_bella","am_michael","am_adam","bf_emma","bm_george"], es:["ef_dora","em_alex"], it:["if_sara","im_nicola"], pt:["pf_dora"] } };
-const STATUS = { waiting:"waiting", running:"reading now", done:"finished", error:"failed" };
-let book = null, lastPreview = 0, timer = null, speeds = {}, quitting = false;
+const VOICE_NAMES = { fr_female:"French, woman", fr_male:"French, man", casual_female:"English, woman, casual", casual_male:"English, man, casual",
+                      cheerful_female:"English, woman, cheerful", neutral_female:"English, woman, neutral", neutral_male:"English, man, neutral" };
+const STATUS = { waiting:"Waiting", running:"Reading now", done:"Ready", error:"Failed" };
+let book = null, lastPreview = 0, timer = null, speeds = {}, quitting = false, restarting = false, boot = "", wasRunning = false, toastTimer = null;
 const api = (path, opts) => fetch(path, opts).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; });
 const post = (path, data) => api(path, { method:"POST", body:JSON.stringify(data || {}) });
 const fail = e => { $("err").textContent = e.message || e; };
+const dur = h => h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : `${h >= 10 ? Math.round(h) : h.toFixed(1)} h`;
+function toast(text) { $("toast").textContent = text; $("toast").classList.add("on"); clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("on"), 2600); }
 
 function fillVoices() {
   const lang = book.language.slice(0, 2), list = (VOICES[$("model").value][lang]) || VOICES[$("model").value].en;
-  $("voice").innerHTML = list.map(v => `<option>${v}</option>`).join("");
+  $("voice").innerHTML = "";
+  list.forEach(v => { const o = document.createElement("option"); o.value = v; o.textContent = VOICE_NAMES[v] || v.split("/").pop().replace(/\.wav$/, ""); $("voice").append(o); });
 }
 function countSelected() {
   const boxes = [...document.querySelectorAll("#chapters input:checked")];
-  const min = boxes.reduce((s, b) => s + book.chapters[b.value - 1].minutes, 0);
-  const hours = min / 60, speed = speeds[$("model").value];
-  const dur = h => h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : `${h.toFixed(1)} h`;
-  $("total").textContent = `${boxes.length} chapters · ${dur(hours)} of audio` + (speed && boxes.length ? ` · about ${dur(hours / speed)} to create` : "");
+  const hours = boxes.reduce((s, b) => s + book.chapters[b.value - 1].minutes, 0) / 60, speed = speeds[$("model").value];
+  $("summary").innerHTML = "";
+  const b = document.createElement("b"); b.textContent = `${boxes.length} chapter${boxes.length === 1 ? "" : "s"}, ${dur(hours)} of audio.`;
+  $("summary").append(b, boxes.length ? (speed ? ` About ${dur(hours / speed)} to create on this Mac with this model.` : " Its speed on this Mac is not known yet: run a comparison to measure it.") : " Tick at least one chapter.");
+  $("add").disabled = !boxes.length;
   return boxes.map(b => +b.value);
 }
 function showBook(b) {
   book = b; $("err").textContent = "";
-  $("title").textContent = b.title; $("meta").textContent = [b.author, b.language, b.out].filter(Boolean).join(" · ");
+  $("title").textContent = b.title; $("meta").textContent = [b.author, b.out].filter(Boolean).join(", saved in ");
   [...$("model").options].forEach(o => { const fit = (b.fits || {})[o.value] || "fits";
     o.disabled = fit === "no";
-    o.textContent = o.dataset.label + (o.value === b.recommended ? " · recommended for this Mac" : fit === "no" ? " · too big for this Mac" : fit === "tight" ? " · tight on this Mac" : ""); });
+    o.textContent = o.dataset.label + (o.value === b.recommended ? ", recommended for this Mac" : fit === "no" ? ", too big for this Mac" : fit === "tight" ? ", tight on this Mac" : ""); });
   $("model").value = b.recommended || "voxtral-4bit"; fillVoices();
   $("chapters").innerHTML = "";
   b.chapters.forEach(c => {
-    const row = document.createElement("label"); row.className = "ch" + (c.done ? " done" : "");
-    row.innerHTML = `<input type="checkbox" value="${c.n}" ${c.done || c.skip ? "" : "checked"}><span class="t"></span><span class="m">${c.minutes} min</span>`;
+    const row = document.createElement("label"); row.className = "ch" + (c.done ? " done" : c.skip ? " skip" : "");
+    row.innerHTML = `<input type="checkbox" value="${c.n}" ${c.done || c.skip ? "" : "checked"}><span class="n">${c.n}</span><span class="t"></span><span class="m">${c.minutes} min</span>`;
     row.querySelector(".t").textContent = c.title;
-    if (c.skip && !c.done) { const k = document.createElement("span"); k.className = "tagk"; k.textContent = "front matter"; row.querySelector(".t").append(k); }
+    if (c.done || c.skip) { const k = document.createElement("span"); k.className = "tagk"; k.textContent = c.done ? "done" : "front matter"; row.querySelector(".t").append(k); }
     $("chapters").append(row);
   });
-  $("book").classList.remove("hide"); $("player").classList.add("hide"); $("steps").classList.add("hide"); countSelected();
+  $("book").classList.remove("hide"); $("player").classList.add("hide"); $("cmp").classList.add("hide");
+  layout(); countSelected(); $("book").scrollIntoView({ behavior:"smooth", block:"start" });
 }
+function closeBook() { book = null; $("book").classList.add("hide"); layout(); }
 function upload(file) {
-  if (!file) return; $("drop").innerHTML = "<strong>Reading the book...</strong>"; $("drop").append(file.name);
-  api("/open", { method:"POST", headers:{ "X-Name": encodeURIComponent(file.name) }, body:file })
-    .then(showBook).catch(fail).finally(() => { $("drop").innerHTML = "<strong>Drop another book here, or click to choose one</strong>It will be added behind the others"; });
+  if (!file) return; $("drop").querySelector("strong").textContent = "Reading " + file.name + "...";
+  api("/open", { method:"POST", headers:{ "X-Name": encodeURIComponent(file.name) }, body:file }).then(showBook).catch(fail).finally(layout);
 }
 function settings() {
-  const chapters = countSelected(); if (!chapters.length) { fail("Select at least one chapter."); return null; }
+  const chapters = countSelected(); if (!chapters.length) { fail("Tick at least one chapter."); return null; }
   $("err").textContent = "";
   return { chapters, model:$("model").value, voice:$("voice").value, iphone:$("iphone").checked };
 }
+let hasQueue = false;
+function layout() {                                   // the drop zone shrinks once there is something else to look at
+  const busy = !!book || hasQueue;
+  $("drop").classList.toggle("small", busy); $("steps").classList.toggle("hide", busy);
+  $("drop").querySelector("strong").textContent = busy ? "Add another ebook" : "Drop an ebook here, or click to choose one";
+}
 function showQueue(s) {
-  $("queue").classList.toggle("hide", !s.queue.length && !s.lines.length);
+  hasQueue = s.queue.length > 0; $("queue").classList.toggle("hide", !hasQueue);
   $("qlist").innerHTML = "";
-  s.queue.forEach((q, i) => {
+  s.queue.forEach(q => {
     const row = document.createElement("div"); row.className = "q " + q.status;
-    row.innerHTML = `<span class="pos">${i + 1}</span><span class="t"></span><span class="m"></span><a class="open">open</a>` + (q.status === "running" ? "" : `<a class="rm">remove</a>`);
+    row.innerHTML = `<span class="dot"></span><span class="t"></span><span class="links"><a class="open">Open folder</a>${q.status === "running" ? "" : `<a class="rm">Remove</a>`}</span>
+      <span class="meta"><span class="what"></span><span class="mini"><i style="width:${q.chapters ? 100 * q.done / q.chapters : 0}%"></i></span><span>${q.done} of ${q.chapters} chapters</span></span>`;
     row.querySelector(".t").textContent = q.title;
-    row.querySelector(".m").textContent = `${q.done} of ${q.chapters} chapters · ${q.status === "error" && q.note ? q.note : STATUS[q.status]}`;
+    const what = row.querySelector(".what"); what.textContent = q.status === "error" && q.note ? "Failed: " + q.note : STATUS[q.status]; if (q.status === "error") what.className = "note";
+    if (q.status === "done") { const h = document.createElement("span"); h.className = "hint";
+      h.textContent = q.iphone ? "Copied to iCloud Drive. On your iPhone: Files, iCloud Drive, Audiobooks, then open the .m4b file in an audiobook player."
+                               : "The audiobook is the .m4b file in its folder."; row.append(h); }
     row.querySelector(".open").onclick = () => post("/folder", { id:q.id }).catch(fail);
     const a = row.querySelector(".rm"); if (a) a.onclick = () => post("/queue/remove", { id:q.id }).then(poll).catch(fail);
     $("qlist").append(row);
   });
   const todo = s.queue.filter(q => q.status === "waiting" || q.status === "error").length;
   const started = s.queue.some(q => q.done > 0 && q.status !== "done");
-  $("qstart").textContent = started ? "Resume the queue" : "Start the queue";
-  $("qstart").classList.toggle("hide", s.running); $("qstart").disabled = !todo;
-  $("stop").classList.toggle("hide", !s.running);
-  $("qnote").textContent = s.running ? "" : (todo ? `${todo} book${todo > 1 ? "s" : ""} to read` : (s.queue.length ? "Nothing left to read" : ""));
+  $("qstart").textContent = started ? "Resume reading" : "Start reading";
+  $("qstart").classList.toggle("hide", s.running || !todo);
+  $("qnote").textContent = s.running ? "" : todo ? `${todo} book${todo > 1 ? "s" : ""} waiting` : hasQueue ? "Everything in the queue has been read." : "";
+  layout();
 }
-function showProgress(s) {
-  const segs = s.running ? s.segments : [], now = segs.find(g => g.n === s.now);
-  const pct = s.running && s.total ? Math.floor(100 * s.i / s.total) : 0;
-  $("chname").textContent = now ? now.title : (s.running && s.total ? "Preview" : "");
-  $("chpct").textContent = s.running && s.total ? pct + "%" : "";
-  $("bar").firstElementChild.style.width = pct + "%";
-  $("detail").textContent = s.running && s.total ? `passage ${s.i} of ${s.total}` : "";
-  const box = $("segs"); box.classList.toggle("hide", !segs.length);
+function showNow(s) {
+  const show = s.running || !!s.error;
+  $("now").classList.toggle("hide", !show); if (!show) { document.title = "book2audio"; return; }
+  const segs = s.running ? s.segments : [], cur = segs.find(g => g.n === s.now), reading = s.running && s.total > 0;
+  $("nowkind").textContent = s.running ? (s.kind || "Working") : "Stopped on an error";
+  $("nowtitle").textContent = s.title || "";
+  $("pct").innerHTML = reading ? `${s.percent}<small>%</small>` : "";
+  $("left").textContent = reading ? s.left.replace(/^about/, "About") : s.running ? "Getting the voice model ready..." : "";
+  document.title = reading ? `${s.percent}% ${s.title || "book2audio"}` : "book2audio";
+  const box = $("segs"); box.classList.toggle("hide", segs.length < 2);
   if (box.children.length !== segs.length) box.innerHTML = segs.map(() => "<div><i></i></div>").join("");
+  const tallest = Math.max(1, ...segs.map(g => g.w));
   segs.forEach((g, k) => { const d = box.children[k];
-    d.style.flexGrow = g.w; d.className = g.n === s.now ? "now" : ""; d.title = `${g.title}: ${g.p}%`; d.firstChild.style.width = g.p + "%"; });
+    d.style.height = Math.max(8, Math.round(100 * Math.sqrt(g.w / tallest))) + "%"; d.className = g.n === s.now ? "now" : "";
+    d.title = `${g.title}: ${g.p}%`; d.firstChild.style.height = g.p + "%"; });
+  const cp = reading ? Math.floor(100 * s.i / s.total) : 0;
+  $("chname").textContent = cur ? cur.title : "";
+  $("chpct").textContent = reading ? `${cp}% of this ${segs.length ? "chapter" : "passage"}` : "";
+  $("chbar").firstElementChild.style.width = cp + "%"; $("chbar").setAttribute("aria-valuenow", cp);
   const done = segs.filter(g => g.p === 100).length;
-  $("segnote").textContent = segs.length ? `${done} of ${segs.length} chapters done` : "";
+  $("segnote").textContent = segs.length > 1 ? `${done} of ${segs.length} chapters done` : "";
+  $("stop").classList.toggle("hide", !s.running);
+  $("nowerr").classList.toggle("hide", !s.error); $("nowerr").textContent = s.error || "";
+  $("log").textContent = s.lines.join("\n"); if (s.error) $("log").classList.remove("hide");
+  $("more").textContent = $("log").classList.contains("hide") ? "Show details" : "Hide details"; $("log").scrollTop = 1e9;
 }
 let cmpSeen = "";
 function showCompare(s) {
-  const rows = s.compare || []; $("cmp").classList.toggle("hide", !rows.length);
+  const rows = s.compare || []; $("cmp").classList.toggle("hide", !rows.length || !book);
   const sig = JSON.stringify(rows) + s.comparing; if (sig === cmpSeen) return; cmpSeen = sig;   // do not restart players that are playing
   $("cmprows").innerHTML = "";
   rows.forEach(r => {
     const d = document.createElement("div"); d.className = "c";
-    const waiting = !r.file && !r.error;
-    d.innerHTML = `<b></b><span class="m"></span>` + (r.file ? `<span></span><audio controls preload="none" src="/audio?f=${encodeURIComponent(r.file)}&t=${Date.now()}"></audio>` : "");
+    d.innerHTML = `<b></b><span class="m"></span>` + (r.file ? `<audio controls preload="none" src="/audio?f=${encodeURIComponent(r.file)}&t=${Date.now()}"></audio>` : "");
     d.querySelector("b").textContent = r.label;
     const m = d.querySelector(".m");
-    if (r.error) { m.textContent = "failed: " + r.error; m.classList.add("bad"); }
-    else if (waiting) m.textContent = s.comparing === r.model ? "reading..." : "waiting";
-    else m.textContent = `${r.speed}x real time · ${r.audio_s} s of audio in ${r.compute_s} s · ${r.chars_s} characters/s · loaded in ${r.load_s} s`;
+    if (r.error) { m.textContent = "Failed: " + r.error; m.classList.add("bad"); }
+    else if (!r.file) m.textContent = s.comparing === r.model ? "Reading..." : "Waiting";
+    else m.textContent = `${r.speed}x real time: ${r.audio_s} s of audio in ${r.compute_s} s`;
     $("cmprows").append(d);
   });
 }
 function poll() {
   clearTimeout(timer);
   api("/status").then(s => {
-    speeds = s.speeds || {}; if (book) countSelected();
-    if (s.machine && s.machine.memory_gb) $("mac").textContent = `Running on this Mac: ${s.machine.chip}, ${s.machine.memory_gb} GB`;
-    $("steps").classList.toggle("hide", !!book || s.queue.length > 0);
-    showQueue(s);
-    $("work").classList.toggle("hide", !s.lines.length);
-    $("state").textContent = s.running ? (s.current ? s.current + ": " : "") + (s.total ? `${s.percent}% done, ${s.left}` : "getting ready...") : (s.error ? "Stopped on an error" : "Idle");
-    showProgress(s); showCompare(s);
-    $("log").textContent = s.lines.join("\n") + (s.error ? "\n" + s.error : "");
-    if (s.error) { $("log").classList.remove("hide"); $("more").textContent = "Hide details"; }   // an error is never hidden
-    $("log").scrollTop = 1e9;
+    if (restarting && s.boot !== boot) { location.reload(); return; }     // the new one has started
+    if (restarting) { timer = setTimeout(poll, 700); return; }             // the old one is still closing
+    boot = s.boot; speeds = s.speeds || {}; if (book) countSelected();
+    if (s.machine && s.machine.memory_gb) $("mac").textContent = `on ${s.machine.chip}, ${s.machine.memory_gb} GB`;
+    showQueue(s); showNow(s); showCompare(s);
     $("preview").disabled = $("compare").disabled = s.running;
     if (s.preview && s.preview_at !== lastPreview) { lastPreview = s.preview_at; $("player").src = "/audio?f=" + encodeURIComponent(s.preview) + "&t=" + s.preview_at; $("player").classList.remove("hide"); $("player").play().catch(() => {}); }
-    if (book && s.book_done) s.book_done.forEach(n => { const row = $("chapters").children[n - 1]; if (row) row.classList.add("done"); });
+    if (book && s.book_done) s.book_done.forEach(n => { const row = $("chapters").children[n - 1]; if (row && !row.classList.contains("done")) { row.classList.add("done"); row.classList.remove("skip");
+      const k = row.querySelector(".tagk") || row.querySelector(".t").appendChild(Object.assign(document.createElement("span"), { className:"tagk" })); k.textContent = "done"; } });
+    if (wasRunning && !s.running && !s.error && s.kind && s.kind.startsWith("Book") && s.queue.every(q => q.status !== "waiting")) toast("The queue is finished.");
+    wasRunning = s.running;
     if (s.running) timer = setTimeout(poll, 1000);
-  }).catch(() => { if (quitting) { document.querySelector("main").classList.add("hide"); $("gone").classList.remove("hide"); } else timer = setTimeout(poll, 3000); });
+  }).catch(() => { if (restarting) timer = setTimeout(poll, 700);
+    else if (quitting) { document.querySelector("main").classList.add("hide"); $("gone").classList.remove("hide"); }
+    else timer = setTimeout(poll, 3000); });
 }
 $("drop").onclick = () => $("file").click();
-$("drop").onkeydown = e => { if (e.key === "Enter" || e.key === " ") $("file").click(); };
+$("drop").onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } };
 $("file").onchange = e => { upload(e.target.files[0]); e.target.value = ""; };   // so the same book can be chosen again
-["dragover","dragenter"].forEach(n => $("drop").addEventListener(n, e => { e.preventDefault(); $("drop").classList.add("over"); }));
-["dragleave","drop"].forEach(n => $("drop").addEventListener(n, e => { e.preventDefault(); $("drop").classList.remove("over"); }));
-$("drop").addEventListener("drop", e => upload(e.dataTransfer.files[0]));
+["dragover","dragenter"].forEach(n => document.addEventListener(n, e => { e.preventDefault(); $("drop").classList.add("over"); }));
+["dragleave","drop"].forEach(n => document.addEventListener(n, e => { e.preventDefault(); $("drop").classList.remove("over"); }));
+document.addEventListener("drop", e => upload(e.dataTransfer.files[0]));              // a book can be dropped anywhere on the page
 $("model").onchange = () => { fillVoices(); countSelected(); }; $("chapters").onchange = countSelected;
-$("more").onclick = () => { const hidden = $("log").classList.toggle("hide"); $("more").textContent = hidden ? "Show details" : "Hide details"; $("log").scrollTop = 1e9; };
-$("quit").onclick = () => { quitting = true; post("/quit").catch(() => {}).finally(() => setTimeout(poll, 1500)); };
 const setAll = fn => { document.querySelectorAll("#chapters .ch").forEach(r => r.querySelector("input").checked = fn(r)); countSelected(); };
-$("all").onclick = () => setAll(r => !r.querySelector(".tagk")); $("none").onclick = () => setAll(() => false); $("todo").onclick = () => setAll(r => !r.classList.contains("done"));
+$("all").onclick = () => setAll(r => !r.classList.contains("skip")); $("none").onclick = () => setAll(() => false);
+$("todo").onclick = () => setAll(r => !r.classList.contains("done") && !r.classList.contains("skip"));
+$("closebook").onclick = closeBook;
 $("preview").onclick = () => { const d = settings(); if (d) post("/preview", d).then(poll).catch(fail); };
 $("compare").onclick = () => { const d = settings(); if (d) post("/compare", d).then(poll).catch(fail); };
-$("add").onclick = () => { const d = settings(); if (d) post("/queue/add", d).then(() => { $("book").classList.add("hide"); poll(); window.scrollTo(0, 0); }).catch(fail); };
+$("add").onclick = () => { const d = settings(); if (d) post("/queue/add", d).then(() => { toast(`Added to the queue: ${book.title}`); closeBook(); poll(); window.scrollTo({ top:0, behavior:"smooth" }); }).catch(fail); };
 $("qstart").onclick = () => post("/queue/start").then(poll).catch(fail);
-$("stop").onclick = () => post("/stop").then(poll).catch(fail);
+$("stop").onclick = () => { $("stop").disabled = true; post("/stop").then(() => toast("Pausing after this passage. The position is saved.")).catch(fail).finally(() => { setTimeout(() => { $("stop").disabled = false; }, 3000); poll(); }); };
 $("folder").onclick = () => post("/folder").catch(fail);
+$("more").onclick = () => { $("log").classList.toggle("hide"); $("more").textContent = $("log").classList.contains("hide") ? "Show details" : "Hide details"; $("log").scrollTop = 1e9; };
+$("restart").onclick = () => { restarting = true; clearTimeout(timer);
+  document.querySelector("main").classList.add("hide"); $("back").classList.remove("hide");
+  post("/restart").catch(() => {}).finally(() => { timer = setTimeout(poll, 700); }); };
+$("quit").onclick = () => { quitting = true; post("/quit").catch(() => {}).finally(() => setTimeout(poll, 1500)); };
 const themeLabel = () => { $("theme").textContent = document.documentElement.dataset.theme === "light" ? "Dark" : "Light"; };
 $("theme").onclick = () => { const t = document.documentElement.dataset.theme === "light" ? "dark" : "light";
   document.documentElement.dataset.theme = t; try { localStorage.setItem("theme", t); } catch (e) {} themeLabel(); };
-themeLabel();
-poll();
+themeLabel(); layout(); poll();
 </script></body></html>
 """
 
 QUEUE_FILE = Path.home() / "Audiobooks" / ".queue.json"
+
+
+def notify(message: str) -> None:
+    """A macOS notification, for when the page is not in front. Never an error if it cannot be shown."""
+    if sys.platform == "darwin":
+        try:
+            subprocess.run(["osascript", "-e", f'display notification {json.dumps(message)} with title "book2audio"'],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
 
 
 class WebReport(Report):
@@ -1583,6 +1711,8 @@ class WebReport(Report):
         self.percent = 0
         self.left = ""
         self.current = ""
+        self.kind = ""                     # "Book 1 of 3", "Preview", "Comparing models"
+        self.title = ""                    # the book being read
         self.results: list[dict] = []      # model comparison, shown under the book
         self.comparing = ""
         self.segments: list[dict] = []     # one per chapter of the book being read
@@ -1601,6 +1731,7 @@ class WebReport(Report):
         self.i = self.total = 0
         if running:
             self.current = f"Comparing models, {MODEL_LABELS.get(running, running)}"
+            self.kind = f"Comparing models: {MODEL_LABELS.get(running, running)}"
 
     def chapter(self, n: int, finished: bool = False) -> None:
         self.now, self.i, self.total = n, 0, 0
@@ -1623,8 +1754,10 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
     global REPORT
     state = REPORT = WebReport()
     jobs: queue.Queue = queue.Queue()
-    session: dict = {"book": None, "out": None, "epub": None}
+    session: dict = {"book": None, "out": None, "epub": None, "restart": ""}
     uploads = Path(tempfile.mkdtemp(prefix="book2audio-"))
+    boot = str(int(time.time() * 1000))              # lets the page tell a fresh start from the old one
+    restarted = os.environ.pop("BOOK2AUDIO_RESTARTED", "")
     lock = threading.Lock()
 
     # The queue is a small file on disk, rewritten at every change: whatever
@@ -1680,6 +1813,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 book = session["book"]
                 with lock:
                     view = [{"id": q["id"], "title": q["title"], "status": q["status"], "note": q.get("note", ""),
+                             "iphone": bool(q.get("iphone")) and ICLOUD.exists(),
                              "chapters": len(q["chapters"]), "done": len(files_done(Path(q["out"]), q["chapters"]))} for q in items]
                 self.reply({"running": state.running, "lines": state.lines[-12:], "i": state.i, "total": state.total,
                             "error": state.error, "percent": state.percent, "left": state.left, "current": state.current,
@@ -1687,6 +1821,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                             "compare": state.results, "comparing": state.comparing,
                             "segments": state.segments if state.running else [], "now": state.now,
                             "speeds": load_speeds(), "machine": {"chip": machine_info()["chip"], "memory_gb": machine_info()["memory_gb"]},
+                            "boot": boot, "kind": state.kind, "title": state.title,
                             "book_done": files_done(session["out"], list(range(1, len(book.chapters) + 1))) if book else []})
             elif url.path == "/audio" and session["out"]:
                 name = Path(parse_qs(url.query).get("f", [""])[0]).name
@@ -1742,6 +1877,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     if not session["book"]:
                         return self.reply({"error": "Choose a book first."}, 400)
                     state.running, state.stop, state.error, state.lines, state.current = True, False, "", [], "Comparing models"
+                    state.kind, state.title = "Comparing models", session["book"].title
                     state.percent, state.left, state.segments, state.now, state.results = 0, "", [], 0, []
                     jobs.put({"kind": "compare", **json.loads(body)})
                     self.reply({"ok": True})
@@ -1751,6 +1887,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     if not session["book"]:
                         return self.reply({"error": "Choose a book first."}, 400)
                     state.running, state.stop, state.error, state.lines, state.current = True, False, "", [], "Preview"
+                    state.kind, state.title = "Preview", session["book"].title
                     state.percent, state.left, state.segments, state.now = 0, "", [], 0
                     jobs.put({"kind": "preview", **json.loads(body)})
                     self.reply({"ok": True})
@@ -1787,6 +1924,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                                 q["status"], q["note"] = "waiting", ""
                         save_queue()
                     state.running, state.stop, state.error, state.lines, state.current = True, False, "", [], ""
+                    state.kind, state.title = "Getting ready", ""
                     state.percent, state.left = 0, ""
                     jobs.put({"kind": "queue"})
                     self.reply({"ok": True})
@@ -1802,6 +1940,11 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                         subprocess.run(["open", str(folder)], check=False)
                     self.reply({"ok": True})
                 elif self.path == "/quit":
+                    state.stop = True
+                    jobs.put(None)
+                    self.reply({"ok": True})
+                elif self.path == "/restart":
+                    session["restart"] = "queue" if state.running and state.current.startswith("Book ") else "idle"
                     state.stop = True
                     jobs.put(None)
                     self.reply({"ok": True})
@@ -1823,6 +1966,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 position = sum(1 for q in items if q["status"] in ("done", "running", "error"))
                 save_queue()
             state.current = f"Book {position} of {len(items)}, {item['title']}"
+            state.kind, state.title = f"Book {position} of {len(items)}", item["title"]
             state.percent, state.left, state.segments, state.now = 0, "", [], 0
             state.log(f"=== {item['title']} ===")
             status, note = "done", ""
@@ -1840,6 +1984,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 with lock:
                     item["status"], item["note"] = status, note
                     save_queue()
+            notify(f"{item['title']} is ready to listen to." if status == "done" else f"{item['title']} could not be finished.")
         if not state.stop:
             state.log("The queue is finished.")
 
@@ -1858,8 +2003,11 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
         return 0
     threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"book2audio is running at {url}  (close this window or press Ctrl+C to quit)")
-    if open_browser:
+    if open_browser and not restarted:
         webbrowser.open(url)
+    if restarted == "queue":                         # it was reading when asked to restart: carry on
+        state.running, state.stop, state.kind = True, False, "Getting ready"
+        jobs.put({"kind": "queue"})
 
     # The voice model runs here, in the main thread: the web server only hands over jobs.
     while True:
@@ -1890,6 +2038,16 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
             state.running = False
             state.i = state.total = 0
     server.shutdown()
+    server.server_close()
+    if session["restart"]:
+        # Start again in place: same command, same window, with whatever version is now installed.
+        for old in _synth_cache.values():
+            if hasattr(old, "close"):
+                old.close()
+        os.environ["BOOK2AUDIO_RESTARTED"] = session["restart"]
+        print("Restarting book2audio...")
+        sys.stdout.flush()
+        os.execv(sys.executable, [sys.executable, *sys.argv])
     return 0
 
 

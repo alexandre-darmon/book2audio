@@ -36,9 +36,9 @@ Then double-click **book2audio** in the Applications folder of your home folder,
 A page opens in your browser:
 
 1. Drop a book on the page.
-2. Click "1-minute preview" to hear the voice.
+2. Click "Play a 1-minute preview" to hear the voice.
 3. Tick the chapters you want and click "Add to the queue".
-4. Add more books if you like, then click "Start the queue".
+4. Add more books if you like, then click "Start reading".
 
 Copyright pages, tables of contents and the like are left unticked. The page tells you how long the audio is and about how long it will take to create with the chosen model.
 
@@ -50,15 +50,15 @@ Audio files go to `~/Audiobooks/<book title>/`, from the page and from the comma
 
 While a book is being read, the page shows the percentage done and the time left, and the Mac is kept awake. Keep the lid open and the charger plugged in: closing the lid still puts it to sleep.
 
-You can stop at any time, and a crash or a reboot loses nothing: the queue is kept, and the position inside the current chapter is saved after every passage. At the next launch the page shows the queue as it was, and "Resume the queue" continues at the exact passage where it stopped, with the same voice. A book that fails is marked as failed and the next one starts. The `.m4b` audiobook of a book is rebuilt at the end of each run with every chapter finished so far.
+**Pause** stops after the current passage. You can pause at any time, and a crash or a reboot loses nothing: the queue is kept, and the position inside the current chapter is saved after every passage. At the next launch the page shows the queue as it was, and "Resume reading" continues at the exact passage where it stopped, with the same voice. A book that fails is marked as failed and the next one starts. The `.m4b` audiobook of a book is rebuilt at the end of each run with every chapter finished so far.
 
 To remove it: `uv tool uninstall book2audio` and delete `~/Applications/book2audio.app`. Audio files stay in `~/Audiobooks`, models in `~/.cache/huggingface`.
 
-To stop it, click **Quit** at the top of the page. Starting it twice is harmless: the second time simply reopens the page.
+At the top of the page, **Restart** stops and starts book2audio again, which is how you pick up a new version after an update: a book being read goes on where it stopped. **Quit** stops it. Starting it twice is harmless: the second time simply reopens the page.
 
 ## Listen on the iPhone
 
-Keep "Copy to iCloud Drive for the iPhone" ticked. The `.m4b` lands in `iCloud Drive/Audiobooks`. On the phone, open it from the Files app, or import it into an audiobook player such as BookPlayer, which keeps your position and shows the chapters.
+Keep "Copy the finished audiobook to iCloud Drive" ticked. When the book is finished, the `.m4b` is copied to `iCloud Drive/Audiobooks`, so it appears on your iPhone and your other Apple devices. A macOS notification tells you when a book is ready. On the phone, open it from the Files app, or import it into an audiobook player such as BookPlayer, which keeps your position and shows the chapters.
 
 ## Voices
 
