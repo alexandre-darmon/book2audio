@@ -449,6 +449,11 @@ class Report:
     def compare(self, results: list[dict], running: str) -> None:
         """Called as a model comparison moves on."""
 
+    def voices(self, done: int, total: int, label: str, stem: str, error: str = "") -> None:
+        """Called before each voice sample, and when one could not be made."""
+        if error:
+            print(f"   {label}: {error}")
+
 
 def fmt_duration(seconds: float) -> str:
     minutes = int(round(seconds / 60))
@@ -528,30 +533,37 @@ class Synth:
             from mlx_audio.tts.utils import load_model
         except ImportError:
             sys.exit("The voice models need a Mac with Apple Silicon (M1 or later): mlx-audio is not available here.")
-        short = language.split("-")[0]
-        model_id = MODEL_ALIASES.get(model_id.lower(), model_id)
+        self.model_id = MODEL_ALIASES.get(model_id.lower(), model_id)
+        self.speed, self.lang_code = speed, lang_code
         self.kwargs: dict = {}
-        if "kokoro" in model_id.lower():
+        if "kokoro" in self.model_id.lower() and language.split("-")[0] not in KOKORO:
+            REPORT.log(f"Warning: Kokoro has no '{language}' voice, reading with an English voice.")
+        self.set_voice(voice, language)
+        REPORT.log(f"Loading {self.model_id} ({', '.join(f'{k}={v}' for k, v in self.kwargs.items())})")
+        self.model = load_local_first(self.model_id, load_model)
+        self.sample_rate = int(getattr(self.model, "sample_rate", 0) or 24000)
+
+    def set_voice(self, voice: str | None, language: str) -> None:
+        """Change the voice. The model stays loaded: only what is passed to it changes."""
+        short, name = language.split("-")[0], self.model_id.lower()
+        if "kokoro" in name:
             code, default_voice = KOKORO.get(language) or KOKORO.get(short) or KOKORO["en"]
-            if short not in KOKORO:
-                REPORT.log(f"Warning: Kokoro has no '{language}' voice, reading with an English voice.")
-            self.kwargs = {"voice": voice or default_voice, "lang_code": lang_code or code, "speed": speed}
-        elif "voxtral" in model_id.lower():
+            voice = voice or default_voice
+            if re.fullmatch(r"[a-z][fm]_\w+", voice):      # a Kokoro voice carries its language: bf_emma is British
+                code = voice[0]
+            self.kwargs = {"voice": voice, "lang_code": self.lang_code or code, "speed": self.speed}
+        elif "voxtral" in name:
             # Voxtral picks the language from the voice: fr_female, fr_male, casual_female...
-            default_voice = VOXTRAL.get(short, "casual_female")
-            self.kwargs = {"voice": voice or default_voice}
-            if lang_code:
-                self.kwargs["lang_code"] = lang_code
+            self.kwargs = {"voice": voice or VOXTRAL.get(short, "casual_female")}
+            if self.lang_code:
+                self.kwargs["lang_code"] = self.lang_code
         else:
-            self.kwargs = {"lang_code": lang_code or LANG_NAMES.get(short, "English")}
+            self.kwargs = {"lang_code": self.lang_code or LANG_NAMES.get(short, "English")}
             if voice:
                 self.kwargs["voice"] = voice
-            if speed != 1.0:
-                self.kwargs["speed"] = speed
-        REPORT.log(f"Loading {model_id} ({', '.join(f'{k}={v}' for k, v in self.kwargs.items())})")
-        self.key = f"{model_id}|{sorted(self.kwargs.items())}"
-        self.model = load_local_first(model_id, load_model)
-        self.sample_rate = int(getattr(self.model, "sample_rate", 0) or 24000)
+            if self.speed != 1.0:
+                self.kwargs["speed"] = self.speed
+        self.key = f"{self.model_id}|{sorted(self.kwargs.items())}"
 
     def say(self, text: str):
         import numpy as np
@@ -758,10 +770,17 @@ proto = os.fdopen(os.dup(1), "wb")      # keep the real output for audio...
 os.dup2(2, 1)                           # ...and send anything the libraries print to the log
 from pocket_tts import TTSModel
 model = TTSModel.load_model(language=sys.argv[1])
-voice = model.get_state_for_audio_prompt(sys.argv[2])
+name, voice = sys.argv[2], model.get_state_for_audio_prompt(sys.argv[2])
 proto.write((json.dumps({"rate": int(model.sample_rate)}) + "\n").encode()); proto.flush()
 for line in sys.stdin:
-    audio = model.generate_audio(voice, json.loads(line)["text"]).detach().cpu().numpy().astype("<f4").reshape(-1)
+    job = json.loads(line)
+    try:
+        if job.get("voice") and job["voice"] != name:      # another voice of the same model: no reload
+            voice = model.get_state_for_audio_prompt(job["voice"]); name = job["voice"]
+        audio = model.generate_audio(voice, job["text"]).detach().cpu().numpy().astype("<f4").reshape(-1)
+    except Exception as e:                                 # say what went wrong and stay ready for the next passage
+        proto.write((json.dumps({"error": f"{type(e).__name__}: {e}"}) + "\n").encode()); proto.flush()
+        continue
     proto.write((json.dumps({"samples": int(audio.size)}) + "\n").encode()); proto.write(audio.tobytes()); proto.flush()
 """
 
@@ -802,10 +821,17 @@ cfg = None
 no_text = no_prefix = True
 if tts.valid_cfg_conditionings:
     cfg, tts.cfg_coef, no_text, no_prefix = tts.cfg_coef, 1.0, False, False
-voices = [tts.get_voice_path(sys.argv[2])] if tts.multi_speaker else []
-attributes = [tts.make_condition_attributes(voices, cfg)]
+name = sys.argv[2]
+attributes = [tts.make_condition_attributes([tts.get_voice_path(name)] if tts.multi_speaker else [], cfg)]
 proto.write((json.dumps({"rate": int(tts.mimi.sample_rate)}) + "\n").encode()); proto.flush()
 for line in sys.stdin:
+    job = json.loads(line)
+    if job.get("voice") and job["voice"] != name and tts.multi_speaker:
+        try:
+            attributes = [tts.make_condition_attributes([tts.get_voice_path(job["voice"])], cfg)]; name = job["voice"]
+        except Exception as e:
+            proto.write((json.dumps({"error": f"{type(e).__name__}: {e}"}) + "\n").encode()); proto.flush()
+            continue
     chunks = []
     def on_frame(frame):
         if (frame == -1).any():
@@ -813,7 +839,7 @@ for line in sys.stdin:
         pcm = tts.mimi.decode_step(frame[:, :, None])
         chunks.append(np.array(mx.clip(pcm[0, 0], -1, 1)))
     tts.mimi.reset_state()
-    tts.generate([tts.prepare_script([json.loads(line)["text"]])], attributes,
+    tts.generate([tts.prepare_script([job["text"]])], attributes,
                  cfg_is_no_prefix=no_prefix, cfg_is_no_text=no_text, on_frame=on_frame)
     audio = (np.concatenate(chunks, -1) if chunks else np.zeros(0)).astype("<f4").reshape(-1)
     proto.write((json.dumps({"samples": int(audio.size)}) + "\n").encode()); proto.write(audio.tobytes()); proto.flush()
@@ -827,7 +853,8 @@ class WorkerSynth:
         uv = shutil.which("uv")
         if not uv:
             sys.exit(f"{label} needs uv to install itself (https://docs.astral.sh/uv/).")
-        self.label, self.key = label, key
+        self.label, self._key, self.default_voice = label, key, argv[-1]
+        self.set_voice(None)
         self._dir = tempfile.mkdtemp(prefix="book2audio-worker-")
         script = Path(self._dir) / "worker.py"
         script.write_text(worker)
@@ -837,16 +864,23 @@ class WorkerSynth:
                                       "python", "-u", str(script), *argv], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         self.sample_rate = int(self._header()["rate"])
 
+    def set_voice(self, voice: str | None, language: str = "") -> None:
+        self.voice = voice or self.default_voice
+        self.key = self._key.format(voice=self.voice)
+
     def _header(self) -> dict:
         line = self.proc.stdout.readline()
         if not line:
             raise RuntimeError(f"{self.label} stopped. The reason is in the Terminal window, just above.")
-        return json.loads(line)
+        header = json.loads(line)
+        if header.get("error"):
+            raise RuntimeError(header["error"])
+        return header
 
     def say(self, text: str):
         import numpy as np
 
-        self.proc.stdin.write((json.dumps({"text": text}) + "\n").encode())
+        self.proc.stdin.write((json.dumps({"text": text, "voice": self.voice}) + "\n").encode())
         self.proc.stdin.flush()
         size = 4 * int(self._header()["samples"])
         data = b""
@@ -868,9 +902,9 @@ def worker_synth(model: str, language: str, voice: str | None) -> WorkerSynth:
     if model == "pocket":
         name, default_voice = POCKET.get(short) or POCKET["en"]
         voice = voice or default_voice
-        return WorkerSynth("Pocket TTS", f"pocket|{name}|{voice}", POCKET_WORKER, ["pocket-tts"], [name, voice])
+        return WorkerSynth("Pocket TTS", "pocket|" + name + "|{voice}", POCKET_WORKER, ["pocket-tts"], [name, voice])
     voice = voice or KYUTAI_VOICES.get(short) or KYUTAI_VOICES["en"]
-    return WorkerSynth("Kyutai TTS", f"kyutai|{voice}", KYUTAI_WORKER, ["moshi_mlx==0.2.12", "numpy", "sentencepiece"],
+    return WorkerSynth("Kyutai TTS", "kyutai|{voice}", KYUTAI_WORKER, ["moshi_mlx==0.2.12", "numpy", "sentencepiece"],
                        [short, voice])
 
 
@@ -885,9 +919,9 @@ def default_model(language: str) -> str:
 
 
 def make_synth(args, language: str):
-    """The model stays loaded between two jobs that use the same voice. Only one is kept in memory."""
+    """The model stays loaded between two jobs, whatever the voice. Only one is kept in memory."""
     model = args.model or default_model(language)
-    key = (model, language, args.voice, args.speed, args.lang_code)
+    key = (model, language.split("-")[0], args.speed, args.lang_code)    # the voice is not part of it: it can change
     if key not in _synth_cache:
         for old in _synth_cache.values():
             if hasattr(old, "close"):
@@ -902,6 +936,7 @@ def make_synth(args, language: str):
             pass
         _synth_cache[key] = (worker_synth(model.lower(), language, args.voice) if model.lower() in WORKER_MODELS
                              else Synth(model, language, args.voice, args.speed, args.lang_code))
+    _synth_cache[key].set_voice(args.voice, language)
     return _synth_cache[key]
 
 
@@ -962,6 +997,176 @@ def run_preview(book: Book, chapter_number: int, language: str, args, out_dir: P
     encode(pcm, rate, target, {"title": "Preview"})
     REPORT.log(f"Preview written to {target}")
     return target
+
+
+# The voices offered for each model and language: (id for the model, name shown, short note).
+def _kokoro(*ids: str) -> list[tuple[str, str, str]]:
+    accent = {"a": ", American", "b": ", British"}
+    return [(v, v[3:].capitalize(), ("Woman" if v[1] == "f" else "Man") + accent.get(v[0], "")) for v in ids]
+
+
+def _voxtral(*ids: str) -> list[tuple[str, str, str]]:
+    return [(v, "Woman" if v.endswith("female") else "Man", "" if re.match(r"[a-z]{2}_", v) else v.split("_")[0].capitalize())
+            for v in ids]
+
+
+# Pocket TTS ships the same 27 voices for every language it speaks. The one Kyutai uses by default comes first.
+POCKET_VOICES = ("alba anna azelma bill_boerst caro_davy charles cosette daan eponine estelle eve fantine george giovanni "
+                 "jane javert jean juergen lola marius mary michael paul peter_yearsley rafael stuart_bell vera").split()
+
+
+def _pocket(first: str) -> list[tuple[str, str, str]]:
+    return [(v, v.replace("_", " ").title(), "Default" if v == first else "")
+            for v in [first] + [x for x in POCKET_VOICES if x != first]]
+
+
+_VOX = {**{code: _voxtral(f"{code}_female", f"{code}_male") for code in ("fr", "es", "de", "it", "pt", "nl", "hi")},
+        "en": _voxtral("neutral_female", "neutral_male", "casual_female", "casual_male", "cheerful_female"),
+        "ar": _voxtral("ar_male")}
+VOICE_CATALOG = {
+    "voxtral-4bit": _VOX,
+    "voxtral": _VOX,
+    "kyutai": {code: [(voice, "Kyutai voice", "Default")] for code, voice in KYUTAI_VOICES.items()},
+    "pocket": {code: _pocket(default) for code, (_, default) in POCKET.items()},
+    "kokoro": {
+        "fr": _kokoro("ff_siwis"),
+        "en": _kokoro("af_heart", "af_bella", "af_nicole", "af_sarah", "af_aoede", "af_kore", "af_nova", "af_sky",
+                      "am_michael", "am_adam", "am_fenrir", "am_puck", "am_echo", "am_eric", "am_liam", "am_onyx",
+                      "bf_emma", "bf_isabella", "bf_alice", "bf_lily", "bm_george", "bm_fable", "bm_lewis", "bm_daniel"),
+        "es": _kokoro("ef_dora", "em_alex"),
+        "it": _kokoro("if_sara", "im_nicola"),
+        "pt": _kokoro("pf_dora", "pm_alex"),
+        "hi": _kokoro("hf_alpha", "hf_beta", "hm_omega", "hm_psi"),
+        "ja": _kokoro("jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo"),
+        "zh": _kokoro("zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi", "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang"),
+    },
+}
+
+# What every voice says in its sample: the same two sentences, so that only the voice differs.
+SAMPLE_TEXT = {
+    "fr": ("Bonjour, je suis l'une des voix de Book to Audio.",
+           "Je lis vos livres numériques à voix haute, chapitre après chapitre, pour que vous puissiez les écouter où vous voulez."),
+    "en": ("Hello, I am one of the voices of Book to Audio.",
+           "I read your ebooks aloud, chapter by chapter, so you can listen to them wherever you like."),
+    "es": ("Hola, soy una de las voces de Book to Audio.",
+           "Leo tus libros electrónicos en voz alta, capítulo a capítulo, para que puedas escucharlos donde quieras."),
+    "de": ("Hallo, ich bin eine der Stimmen von Book to Audio.",
+           "Ich lese Ihre E-Books laut vor, Kapitel für Kapitel, damit Sie sie hören können, wo immer Sie möchten."),
+    "it": ("Ciao, sono una delle voci di Book to Audio.",
+           "Leggo i tuoi ebook ad alta voce, capitolo dopo capitolo, così puoi ascoltarli dove vuoi."),
+    "pt": ("Olá, sou uma das vozes do Book to Audio.",
+           "Leio os seus livros digitais em voz alta, capítulo a capítulo, para que os possa ouvir onde quiser."),
+    "nl": ("Hallo, ik ben een van de stemmen van Book to Audio.",
+           "Ik lees je e-books hardop voor, hoofdstuk voor hoofdstuk, zodat je ernaar kunt luisteren waar je maar wilt."),
+    "hi": ("नमस्ते, यह Book to Audio की आवाज़ों में से एक है।",
+           "यह ऐप आपकी ई-किताबें अध्याय दर अध्याय पढ़कर सुनाता है, ताकि आप उन्हें कहीं भी सुन सकें।"),
+    "ar": ("مرحباً، أنا أحد أصوات Book to Audio.",
+           "أقرأ كتبك الإلكترونية بصوت عالٍ، فصلاً بعد فصل، لتستمع إليها أينما شئت."),
+    "ja": ("こんにちは、Book to Audio の声のひとつです。",
+           "電子書籍を一章ずつ読み上げますので、お好きな場所でお聴きいただけます。"),
+    "zh": ("你好，我是 Book to Audio 的声音之一。",
+           "我会一章一章地朗读你的电子书，让你随时随地都能收听。"),
+}
+VOICE_DIR = Path.home() / "Audiobooks" / ".voices"       # samples are made once on this Mac, then kept
+
+
+def voice_stem(model: str, language: str, voice: str) -> str:
+    """The file name of a voice sample, without its extension."""
+    name = re.sub(r"[^A-Za-z0-9]+", "-", voice.rsplit("/", 1)[-1].removesuffix(".wav")).strip("-")
+    return f"{model}--{language.split('-')[0]}--{name}"
+
+
+def voice_samples() -> dict[str, Path]:
+    """The samples already made, by stem."""
+    if not VOICE_DIR.is_dir():
+        return {}
+    return {p.stem: p for p in VOICE_DIR.iterdir() if p.suffix in (".m4a", ".wav") and not p.name.startswith(".")}
+
+
+# Samples already made for the main models are published with the project: the page plays them
+# straight away, without loading any model. Each one is fetched the first time it is played.
+SAMPLES_URL = os.environ.get("BOOK2AUDIO_SAMPLES_URL", "https://raw.githubusercontent.com/alexandre-darmon/book2audio/main/voices/")
+_published: dict[str, str] = {}                          # stem -> file name
+
+
+def load_published() -> None:
+    """The list of published samples. Without a network there are simply none."""
+    import urllib.request
+    try:
+        names = json.loads(urllib.request.urlopen(SAMPLES_URL + "index.json", timeout=6).read())
+        _published.update({Path(n).stem: Path(n).name for n in names if re.fullmatch(r"[\w.-]+\.(m4a|wav)", str(n))})
+    except Exception:
+        pass
+
+
+def fetch_published(stem: str) -> Path | None:
+    import urllib.request
+    name = _published.get(stem)
+    if not name:
+        return None
+    try:
+        data = urllib.request.urlopen(SAMPLES_URL + name, timeout=15).read()
+    except Exception:
+        return None
+    VOICE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = VOICE_DIR / (".tmp-" + name)
+    tmp.write_bytes(data)
+    tmp.replace(VOICE_DIR / name)
+    return VOICE_DIR / name
+
+
+def run_all_voice_samples(args) -> None:
+    """Every voice of every model that fits this Mac, in French and English (or --lang, --model).
+    With -o, the samples are also copied to that folder with their list: this is what gets published."""
+    languages = [args.lang.split("-")[0].lower()] if args.lang else ["fr", "en"]
+    models = [args.model] if args.model else [m for m in MODELS if m != "kyutai" and model_fit(m) != "no"]
+    for model in models:
+        for language in languages:
+            rows = VOICE_CATALOG.get(model, {}).get(language, [])
+            todo = [v for v, _, _ in rows if voice_stem(model, language, v) not in voice_samples()]
+            if todo:
+                REPORT.log(f"{MODEL_LABELS.get(model, model)}, {LANGUAGES.get(language, language)}: {len(todo)} sample(s) to make")
+                run_voice_samples(model, language, todo, args)
+    done = voice_samples()
+    REPORT.log(f"{len(done)} samples in {VOICE_DIR}")
+    if args.out:
+        args.out.mkdir(parents=True, exist_ok=True)
+        for path in done.values():
+            shutil.copy2(path, args.out / path.name)
+        (args.out / "index.json").write_text(json.dumps(sorted(p.name for p in done.values()), indent=1) + "\n")
+        REPORT.log(f"Copied to {args.out}, with index.json")
+
+
+def run_voice_samples(model: str, language: str, voices: list[str], args) -> None:
+    """One short sample per voice. The model is loaded once for all of them."""
+    short = language.split("-")[0]
+    first, second = SAMPLE_TEXT.get(short) or SAMPLE_TEXT["en"]
+    script = [(first, PAUSE_PARAGRAPH), (second, 0.0)]
+    fmt = "wav" if pick_format("m4a") == "wav" else "m4a"
+    VOICE_DIR.mkdir(parents=True, exist_ok=True)
+    names = {v: name for v, name, _ in VOICE_CATALOG.get(model, {}).get(short, [])}
+    label = MODEL_LABELS.get(model, model)
+    for k, voice in enumerate(voices):
+        stem = voice_stem(model, short, voice)
+        REPORT.voices(k, len(voices), label, stem)
+        try:
+            synth = make_synth(argparse.Namespace(**{**vars(args), "model": model, "voice": voice}), short)
+            pcm = VOICE_DIR / f".tmp-{stem}.pcm"
+            _, _, rate = render_chapter(synth, script, pcm, None, resume=False)
+            encode(pcm, rate, VOICE_DIR / f"{stem}.{fmt}", {"title": f"{names.get(voice, voice)} ({label})", "artist": "book2audio"})
+        except (Stopped, KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as e:                       # one voice that fails must not stop the others
+            REPORT.voices(k, len(voices), f"{label}, {names.get(voice, voice)}", stem, f"{type(e).__name__}: {e}"[:160])
+            worker = next(iter(_synth_cache.values()), None)
+            if isinstance(worker, WorkerSynth):
+                try:
+                    worker.proc.wait(timeout=0.5)
+                    worker.close()
+                    _synth_cache.clear()             # its process died: a fresh one starts for the next voice
+                except subprocess.TimeoutExpired:
+                    pass                             # still alive: only this voice failed
+    REPORT.voices(len(voices), len(voices), label, "")
 
 
 # What each model needs while it reads: memory in GB (model plus working room), and whether it uses the
@@ -1272,6 +1477,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--compare", action="store_true", help="read the same minute with each model and time them on this machine")
     ap.add_argument("--check", action="store_true", help="show this computer's chip and memory, and the models that suit it")
     ap.add_argument("--demo", action="store_true", help="read a built-in sample text with each model (no book needed)")
+    ap.add_argument("--voice-samples", action="store_true",
+                    help="make the short sample of every voice (French and English, or --lang; every model that fits, or --model). "
+                         "With -o, also copy them to that folder")
     ap.add_argument("--demo-text", help="with --demo: a text file to read instead of the built-in sample")
     ap.add_argument("--lang", help="book language, e.g. en, en-gb, fr (default: read from the book)")
     ap.add_argument("--voice", help="voice name (default: a good voice for the language)")
@@ -1291,6 +1499,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.demo:
         run_demo(args)
+        return 0
+    if args.voice_samples:
+        run_all_voice_samples(args)
         return 0
     if args.ui or args.book is None:
         return serve_ui(args)
@@ -1324,7 +1535,9 @@ def main(argv: list[str] | None = None) -> int:
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>book2audio</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cstyle%3E.t%7Bfill:%23111113;stroke:%2326262B%7D.g%7Bstroke:%23F7F7F7%7D@media (prefers-color-scheme:light)%7B.t%7Bfill:%23F7F7F7;stroke:%23E3E3E3%7D.g%7Bstroke:%230A0A0A%7D%7D%3C/style%3E%3Crect class='t' x='.5' y='.5' width='63' height='63' rx='13'/%3E%3Cpath class='g' d='M13 30V34M22 26V38M42 26V38M51 30V34' fill='none' stroke-width='6' stroke-linecap='square'/%3E%3Crect x='28' y='20' width='8' height='24' fill='%238C52EE'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cstyle%3E.t%7Bfill:%23111113;stroke:%2326262B%7D.g%7Bstroke:%23F7F7F7%7D@media (prefers-color-scheme:light)%7B.t%7Bfill:%23F7F7F7;stroke:%23E3E3E3%7D.g%7Bstroke:%230A0A0A%7D%7D%3C/style%3E%3Crect class='t' x='.5' y='.5' width='63' height='63' rx='13'/%3E%3Cpath class='g' d='M13 30V34M22 26V38M42 26V38M51 30V34' fill='none' stroke-width='6' stroke-linecap='square'/%3E%3Crect x='28' y='20' width='8' height='24' fill='%238C52EE'/%3E%3C/svg%3E">
 <style>
   :root { color-scheme: dark;       /* dark or light follows the Mac's own setting */
     --bg:#0a0a0c; --panel:#111113; --raise:#17171a; --line:#232327; --ink:#ededef; --soft:#8b8b93; --faint:#5c5c66;
@@ -1426,7 +1639,22 @@ PAGE = r"""<!doctype html>
   .book-head { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
   .book-head > div { min-width:0; }
   #meta { color:var(--soft); font-size:13px; margin-top:2px; }
-  .settings { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, .9fr); gap:12px; margin-top:18px; align-items:end; }
+  .settings { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1.5fr); gap:12px; margin-top:18px; align-items:end; }
+  .vhead { display:flex; gap:4px 14px; align-items:baseline; flex-wrap:wrap; margin-top:14px; font-size:12px; color:var(--soft); }
+  .vhead a { margin-left:auto; font-size:13px; }
+  #voices { display:grid; grid-template-columns:repeat(auto-fill, minmax(172px, 1fr)); gap:6px; margin-top:6px; max-height:216px; overflow:auto; padding:1px; }
+  .v { display:flex; align-items:center; gap:10px; padding:6px 10px 6px 6px; border:1px solid var(--line); border-radius:8px; background:var(--bg); cursor:pointer; min-width:0; }
+  .v:hover { border-color:var(--faint); } .v:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  .v.sel { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 9%, var(--bg)); }
+  .v .play { width:28px; height:28px; padding:0; border-radius:50%; flex:none; display:grid; place-items:center; }
+  .v:not(.ready) .play { border-style:dashed; color:var(--soft); background:transparent; }
+  .v.playing .play { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .v.busy .play svg { animation:turn .9s linear infinite; }
+  .v .who { display:grid; min-width:0; line-height:1.25; }
+  .v .vn { font-size:13px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .v .vd { font-size:11px; color:var(--soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .v .vd:empty { display:none; }
+  .v.bad .vd { color:var(--danger); }
+  @keyframes turn { to { transform:rotate(360deg); } }
   .cover { width:52px; height:74px; object-fit:cover; border-radius:4px; border:1px solid var(--line); flex:none; background:var(--raise); }
   .cover.ph { display:grid; place-items:center; background:var(--tile); border-color:var(--tile-line); }   /* no cover in the book: the mark, in the Mac's light or dark */
   .with-cover { display:flex; gap:14px; align-items:center; min-width:0; } .with-cover > div { min-width:0; }
@@ -1525,8 +1753,9 @@ PAGE = r"""<!doctype html>
     <div class="settings">
       <label class="field"><span>Language<span id="langnote"></span></span><select id="lang"></select></label>
       <label class="field">Voice model<select id="model"><option value="voxtral-4bit" data-label="Natural (Voxtral 4-bit)"></option><option value="voxtral" data-label="Natural, full size (Voxtral, slower)"></option><option value="kyutai" data-label="Kyutai TTS (experimental)"></option><option value="pocket" data-label="Light, on the CPU (Pocket TTS)"></option><option value="kokoro" data-label="Fast (Kokoro)"></option></select></label>
-      <label class="field">Voice<select id="voice"></select></label>
     </div>
+    <div class="vhead"><span id="vlabel">Voice</span><span id="vnote"></span><a id="vall" class="hide"></a></div>
+    <div id="voices" role="radiogroup" aria-labelledby="vlabel"></div><input type="hidden" id="voice">
     <div id="summary"></div>
     <div class="pick"><h3>Chapters</h3><a id="all">All chapters</a><a id="todo">Only those not done</a><a id="none">None</a></div>
     <div id="chapters"></div>
@@ -1547,16 +1776,6 @@ PAGE = r"""<!doctype html>
 
 <script>
 const $ = id => document.getElementById(id);
-const VOX = { fr:["fr_female","fr_male"], en:["casual_female","casual_male","cheerful_female","neutral_female","neutral_male"],
-              es:["es_female","es_male"], de:["de_female","de_male"], it:["it_female","it_male"], pt:["pt_female","pt_male"], nl:["nl_female","nl_male"],
-              hi:["hi_female","hi_male"], ar:["ar_male"] };
-const VOICES = { voxtral: VOX, "voxtral-4bit": VOX,
-                 kyutai: { fr:["cml-tts/fr/10087_11650_000028-0002_enhanced.wav"], en:["expresso/ex03-ex01_happy_001_channel1_334s.wav"] },
-                 pocket: { fr:["estelle"], en:["alba","marius","cosette","jane","george"], de:["juergen"], es:["lola"], it:["giovanni"], pt:["rafael"] },
-                 kokoro: { fr:["ff_siwis"], en:["af_heart","af_bella","am_michael","am_adam","bf_emma","bm_george"], es:["ef_dora","em_alex"], it:["if_sara","im_nicola"], pt:["pf_dora"],
-                           hi:["hf_alpha"], ja:["jf_alpha"], zh:["zf_xiaobei"] } };
-const VOICE_NAMES = { casual_female:"Woman, casual", casual_male:"Man, casual", cheerful_female:"Woman, cheerful", neutral_female:"Woman, neutral", neutral_male:"Man, neutral" };
-const voiceName = v => VOICE_NAMES[v] || (/^[a-z]{2}_female$/.test(v) ? "Woman" : /^[a-z]{2}_male$/.test(v) ? "Man" : v.split("/").pop().replace(/\.wav$/, ""));
 const STATUS = { waiting:"Waiting", running:"Reading now", done:"Ready", error:"Failed" };
 let book = null, lastPreview = 0, timer = null, speeds = {}, quitting = false, restarting = false, offline = false, boot = "", wasRunning = false, toastTimer = null;
 const api = (path, opts) => fetch(path, opts).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; });
@@ -1565,10 +1784,59 @@ const fail = e => { $("err").textContent = e.message || e; };
 const dur = h => h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : `${h >= 10 ? Math.round(h) : h.toFixed(1)} h`;
 function toast(text) { $("toast").textContent = text; $("toast").classList.add("on"); clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("on"), 2600); }
 
-function fillVoices() {
-  const list = (VOICES[$("model").value] || {})[$("lang").value] || [];
-  $("voice").innerHTML = "";
-  list.forEach(v => { const o = document.createElement("option"); o.value = v; o.textContent = voiceName(v); $("voice").append(o); });
+const ICON = { play:'<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M3 1.5v9l7.5-4.5z" fill="currentColor"/></svg>',
+               pause:'<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M3.5 2v8M8.5 2v8" stroke="currentColor" stroke-width="2.4" fill="none"/></svg>',
+               wait:'<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M6 1.2a4.8 4.8 0 1 1-4.8 4.8" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>' };
+const vplayer = new Audio();
+let samples = new Set(), sampleErrors = {}, sampling = "", wantPlay = "", playing = "", working = false;
+const voiceList = () => ((book && book.catalog.voices[$("model").value]) || {})[$("lang").value] || [];
+function fillVoices() {                               // one row per voice: click to choose it, play to hear it
+  const list = voiceList(), keep = $("voice").value;
+  $("voice").value = list.some(v => v.id === keep) ? keep : (list[0] || {}).id || "";
+  vplayer.pause(); $("voices").innerHTML = "";
+  list.forEach(v => {
+    const row = document.createElement("div"); row.className = "v"; row.tabIndex = 0; row.setAttribute("role", "radio"); row.dataset.id = v.id;
+    row.innerHTML = '<button type="button" class="play"></button><span class="who"><span class="vn"></span><span class="vd"></span></span>';
+    row.querySelector(".vn").textContent = v.name;
+    row.onclick = () => { $("voice").value = v.id; paintVoices(); };
+    row.onkeydown = e => { if (e.target === row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); row.click(); } };
+    row.querySelector(".play").onclick = e => { e.stopPropagation(); playVoice(v); };
+    $("voices").append(row);
+  });
+  paintVoices();
+}
+function paintVoices() {                              // only classes and labels change, so a sample that is playing keeps playing
+  const list = voiceList(), missing = list.filter(v => !samples.has(v.stem));
+  list.forEach((v, k) => { const row = $("voices").children[k]; if (!row) return;
+    const ready = samples.has(v.stem), busy = sampling === v.stem, on = playing === v.stem && !vplayer.paused, bad = sampleErrors[v.stem];
+    row.className = "v" + (v.id === $("voice").value ? " sel" : "") + (ready ? " ready" : "") + (busy ? " busy" : "") + (on ? " playing" : "") + (bad && !ready ? " bad" : "");
+    row.setAttribute("aria-checked", v.id === $("voice").value);
+    row.querySelector(".vd").textContent = bad && !ready ? "Sample failed" : v.note; row.title = bad && !ready ? bad : "";
+    const b = row.querySelector(".play"), state = busy ? "wait" : on ? "pause" : "play";
+    if (b.dataset.state !== state) { b.dataset.state = state; b.innerHTML = ICON[state]; }
+    b.disabled = !ready && working;
+    b.setAttribute("aria-label", busy ? `Creating the sample of ${v.name}` : on ? `Stop ${v.name}` : ready ? `Play ${v.name}` : `Create and play the sample of ${v.name}`); });
+  const speed = speeds[$("model").value], secs = missing.length * 12 / (speed || 1) + 40;
+  $("vnote").textContent = !list.length ? "" : working && sampling ? "Creating samples..." : !missing.length ? "Press play to hear a voice."
+    : samples.size && missing.length < list.length ? "Press play to hear a voice. A dashed button creates its sample first."
+    : "Press play to hear a voice. Its sample is created the first time, then kept on this Mac.";
+  $("vall").classList.toggle("hide", working || missing.length < 2);
+  $("vall").textContent = `Create ${missing.length === list.length ? "all" : "the missing"} ${missing.length} samples` + (speed ? `, about ${Math.max(1, Math.round(secs / 60))} min` : "");
+}
+function startSample(v) { playing = v.stem; vplayer.src = "/voice?s=" + encodeURIComponent(v.stem); return vplayer.play(); }
+function playVoice(v) {
+  if (playing === v.stem && !vplayer.paused) { vplayer.pause(); return; }
+  if (samples.has(v.stem)) { startSample(v).catch(fail); return; }
+  wantPlay = v.stem; makeSamples([v.id]);
+}
+function makeSamples(ids) { $("err").textContent = ""; post("/voices", { model:$("model").value, lang:$("lang").value, voices:ids }).then(poll).catch(e => { wantPlay = ""; fail(e); }); }
+["play", "pause", "ended"].forEach(n => vplayer.addEventListener(n, paintVoices));
+function showVoices(s) {
+  samples = new Set(s.samples || []); sampleErrors = s.sample_errors || {}; sampling = s.sampling || ""; working = s.running;
+  const v = wantPlay && voiceList().find(x => x.stem === wantPlay);
+  if (v && samples.has(v.stem)) { wantPlay = ""; startSample(v).catch(() => toast(`The sample of ${v.name} is ready: press play.`)); }
+  if (!s.running) wantPlay = "";
+  paintVoices();
 }
 function fillModels() {                                // only the models that speak this language and fit this Mac can be picked
   const c = book.catalog, lang = $("lang").value, best = c.recommended[lang];
@@ -1606,7 +1874,7 @@ function showBook(b) {
   $("book").classList.remove("hide"); $("player").classList.add("hide"); $("cmp").classList.add("hide");
   layout(); countSelected(); $("book").scrollIntoView({ behavior:"smooth", block:"start" });
 }
-function closeBook() { book = null; $("book").classList.add("hide"); layout(); }
+function closeBook() { vplayer.pause(); book = null; $("book").classList.add("hide"); layout(); }
 function upload(file) {
   if (!file) return; $("drop").querySelector("strong").textContent = "Reading " + file.name + "...";
   api("/open", { method:"POST", headers:{ "X-Name": encodeURIComponent(file.name) }, body:file }).then(showBook).catch(fail).finally(layout);
@@ -1696,7 +1964,7 @@ function poll() {
     if (restarting) { timer = setTimeout(poll, 700); return; }             // the old one is still closing
     boot = s.boot; speeds = s.speeds || {}; if (book) countSelected();
     if (s.machine && s.machine.memory_gb) $("mac").textContent = `on ${s.machine.chip}, ${s.machine.memory_gb} GB`;
-    showQueue(s); showNow(s); showCompare(s);
+    showQueue(s); showNow(s); showCompare(s); showVoices(s);
     $("preview").disabled = $("compare").disabled = s.running;
     if (s.preview && s.preview_at !== lastPreview) { lastPreview = s.preview_at; $("player").src = "/audio?f=" + encodeURIComponent(s.preview) + "&t=" + s.preview_at; $("player").classList.remove("hide"); $("player").play().catch(() => {}); }
     if (book && s.book_done) s.book_done.forEach(n => { const row = $("chapters").children[n - 1]; if (row && !row.classList.contains("done")) { row.classList.add("done"); row.classList.remove("skip");
@@ -1722,6 +1990,7 @@ const setAll = fn => { document.querySelectorAll("#chapters .ch").forEach(r => r
 $("all").onclick = () => setAll(r => !r.classList.contains("skip")); $("none").onclick = () => setAll(() => false);
 $("todo").onclick = () => setAll(r => !r.classList.contains("done") && !r.classList.contains("skip"));
 $("closebook").onclick = closeBook;
+$("vall").onclick = () => makeSamples(voiceList().filter(v => !samples.has(v.stem)).map(v => v.id));
 $("preview").onclick = () => { const d = settings(); if (d) post("/preview", d).then(poll).catch(fail); };
 $("compare").onclick = () => { const d = settings(); if (d) post("/compare", d).then(poll).catch(fail); };
 $("add").onclick = () => { const d = settings(); if (d) post("/queue/add", d).then(() => { toast(`Added to the queue: ${book.title}`); closeBook(); poll(); window.scrollTo({ top:0, behavior:"smooth" }); }).catch(fail); };
@@ -1738,6 +2007,9 @@ layout(); poll();
 """
 
 QUEUE_FILE = Path.home() / "Audiobooks" / ".queue.json"
+# The tab icon as plain PNG files (64 and 180 pixels): some browsers do not draw an SVG one.
+ICON_64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAABmJLR0QA/wD/AP+gvaeTAAAEF0lEQVR4nO2bz28bRRTH33s7s57Nxk7jH0UqiJORpSAnov0LOBXEhQOCcoQeOPIHILUCFPVYTi0HxJEiIY5IhQP5CxBNIqdKolZBQj3UzcZN6nh2vTuPgxuURm4StfFO6t3PzTsz3u98/Xb0Zj0P4QgajUYRQFw0xnzKDLOIVEXkEgDSUWPThQ0zbjObR4i4SIQ/CwG3W63Wk8NG4fMams3mtNbxVQD8Io77kda9Uhz3wRgDxjAA8Eim8eIgECEQEQghQSlvWwjpMvP3nie+WV5e3ho+agiNxszHzPCD1j3R7T7xjDEjlz8KiAh8v6iVUn1EuLy6uvLLwT7Ogc9Yr8/MA/C1TieY1LonmU/bL318mBmiKBRRFBaknPigUqn5QdBe2N/nGQPq9Zl5Y5IvO51NP0mS1AWPCmMMhGFPFgrqfKXymh8E7T/32v434GnYX+t0Nv1XNeQPg5khDLWrlH+hUjm7FgTtFdhbA5rN5nQYJv9sbW0W4zi2rXWkCCFgerqyE0XumxsbdzoEAKB1fFXrnhj3yQMAxHEMWmspRHgFAAAbjUbRGOdhELTVOIb+MIgIyuWadl2sEYDzfhxHUVYmD08XxTjuR1EEF8kY/kRrXbItKm201kUAvkQAOBfHfdt6UidJ+sjMcwSA1SyF/x5JkgAi1QiRi4PcPlsYw4DIJRrs6rJnwGDOSKdsS5s+uQG2BdgmN8C2ANuItG/41bvrh7bPL7yVmhbIIyA34GQfgQcP/h16/dy5N07F9w0j8xGQG2BbgG2OvQak8Ty+CC+rK/MRkBtgW4BtcgNsC7BNboBtAbbJDbAtwDbHzgRtZ3zP42V1ZT4CcgNsC7DNib4ROul1Io11J/MRkHkDUv9fIO33/keR+QjIDbAtwDa5AbYF2IYA2BxSNzHGIACwIWbcJsqeAUQEzLBNzOaR4xysmxh/BgbwQ0KEJccRmTsnJ4RkRFwiIrqllLdjW1DaKKV2EOknEgJuCyFdytCRwUFlmSuVoj+cdrsdlcvVKhHNRVEobYtLg8nJUs9x6Mbdu63fCAAgjgtfe54XC5H63ih1pJSglOob438Le4nQxsadDiJcnpqqdMf5UUAkKBbLu8z02f37fz2G/VVjm5vtlXK55hcK6nwYanfcDlAjEpw5U+5K6VxfW2vd2Lv+TAIQBO2FavWs53kTF/r90B2XOgIpJUxNVXeldL5bXW1d2d82NAWs19/+iIh/1FqLbnfnVS+d7Sml+sz4+fp669eDfYamgEHQXikWX78pJU5MTPjvuG5hFwAKiAO/Tmc17aBw2nEEuK7iycniju+XjOOIm0nifXjv3uLfw0cdwezsrN/rJe8B8CVmnkOkGiJPAeAp20AwM+NjZtNGxEUAuuV59PvS0lL3sFH/Ae2yjAgONgbYAAAAAElFTkSuQmCC"
+ICON_180 = "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"
 
 
 def notify(message: str) -> None:
@@ -1769,6 +2041,8 @@ class WebReport(Report):
         self.comparing = ""
         self.segments: list[dict] = []     # one per chapter of the book being read
         self.now = 0                       # number of the chapter being read
+        self.sampling = ""                 # the voice sample being made
+        self.sample_errors: dict[str, str] = {}
 
     def log(self, message: str) -> None:
         print(message)
@@ -1784,6 +2058,17 @@ class WebReport(Report):
         if running:
             self.current = f"Comparing models, {MODEL_LABELS.get(running, running)}"
             self.kind = f"Comparing models: {MODEL_LABELS.get(running, running)}"
+
+    def voices(self, done: int, total: int, label: str, stem: str, error: str = "") -> None:
+        if error:
+            self.sample_errors[stem] = error
+            self.log(f"{label}: {error}")
+            return
+        self.sampling, self.i, self.total = stem, 0, 0
+        self.percent, self.left = int(100 * done / max(total, 1)), ""
+        if stem:
+            self.sample_errors.pop(stem, None)
+            self.title = f"{label}, voice {done + 1} of {total}" if total > 1 else label
 
     def chapter(self, n: int, finished: bool = False) -> None:
         self.now, self.i, self.total = n, 0, 0
@@ -1845,7 +2130,9 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
         return {"languages": LANGUAGES,
                 "speaks": {m: v["langs"].split() for m, v in MODELS.items()},
                 "fits": {m: model_fit(m) for m in MODELS},
-                "recommended": {code: recommend(code)["recommended"] for code in LANGUAGES}}
+                "recommended": {code: recommend(code)["recommended"] for code in LANGUAGES},
+                "voices": {m: {code: [{"id": v, "name": name, "note": note, "stem": voice_stem(m, code, v)} for v, name, note in rows]
+                               for code, rows in by_lang.items()} for m, by_lang in VOICE_CATALOG.items()}}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):          # keep the terminal quiet
@@ -1858,6 +2145,35 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def send_file(self, data: bytes, kind: str, cache: bool = False):
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            if cache:
+                self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def send_audio(self, path: Path):
+            data = path.read_bytes()
+            start, end = 0, len(data) - 1
+            rng = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range", ""))
+            if rng and (rng.group(1) or rng.group(2)):       # Safari only plays audio served in ranges
+                if rng.group(1):
+                    start = int(rng.group(1))
+                    end = min(int(rng.group(2)), end) if rng.group(2) else end
+                else:
+                    start = max(0, len(data) - int(rng.group(2)))
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+            else:
+                self.send_response(200)
+            self.send_header("Content-Type", "audio/mp4" if path.suffix in (".m4a", ".m4b") else "audio/wav")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.end_headers()
+            self.wfile.write(data[start:end + 1])
 
         def do_GET(self):
             url = urlparse(self.path)
@@ -1881,6 +2197,8 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                             "compare": state.results, "comparing": state.comparing,
                             "segments": state.segments if state.running else [], "now": state.now,
                             "speeds": load_speeds(), "machine": {"chip": machine_info()["chip"], "memory_gb": machine_info()["memory_gb"]},
+                            "samples": sorted(set(voice_samples()) | set(_published)), "sampling": state.sampling if state.running else "",
+                            "sample_errors": state.sample_errors,
                             "boot": boot, "kind": state.kind, "title": state.title, "book_id": state.book_id if state.kind.startswith("Book") else "",
                             "book_done": files_done(session["out"], list(range(1, len(book.chapters) + 1))) if book else []})
             elif url.path == "/cover":                # the cover of the book being set up, or of a queued one
@@ -1906,24 +2224,16 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 path = session["out"] / name
                 if not name or not path.is_file():
                     return self.reply({"error": "not found"}, 404)
-                data = path.read_bytes()
-                start, end = 0, len(data) - 1
-                rng = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range", ""))
-                if rng and (rng.group(1) or rng.group(2)):       # Safari only plays audio served in ranges
-                    if rng.group(1):
-                        start = int(rng.group(1))
-                        end = min(int(rng.group(2)), end) if rng.group(2) else end
-                    else:
-                        start = max(0, len(data) - int(rng.group(2)))
-                    self.send_response(206)
-                    self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
-                else:
-                    self.send_response(200)
-                self.send_header("Content-Type", "audio/mp4" if path.suffix in (".m4a", ".m4b") else "audio/wav")
-                self.send_header("Accept-Ranges", "bytes")
-                self.send_header("Content-Length", str(end - start + 1))
-                self.end_headers()
-                self.wfile.write(data[start:end + 1])
+                self.send_audio(path)
+            elif url.path == "/voice":                # a voice sample made earlier on this Mac
+                stem = parse_qs(url.query).get("s", [""])[0]
+                path = voice_samples().get(stem) or fetch_published(stem)
+                if not path:
+                    return self.reply({"error": "not found"}, 404)
+                self.send_audio(path)
+            elif url.path in ("/favicon.ico", "/favicon.png", "/apple-touch-icon.png"):
+                import base64
+                self.send_file(base64.b64decode(ICON_180 if "apple" in url.path else ICON_64), "image/png", cache=True)
             else:
                 self.reply({"error": "not found"}, 404)
 
@@ -1957,6 +2267,22 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     state.kind, state.title = "Comparing models", session["book"].title
                     state.percent, state.left, state.segments, state.now, state.results = 0, "", [], 0, []
                     jobs.put({"kind": "compare", **json.loads(body)})
+                    self.reply({"ok": True})
+                elif self.path == "/voices":
+                    if state.running:
+                        return self.reply({"error": "Voice samples can be created when nothing else is being read."}, 409)
+                    job = json.loads(body)
+                    model, lang = str(job.get("model", "")), str(job.get("lang", ""))
+                    known = [v for v, _, _ in VOICE_CATALOG.get(model, {}).get(lang, [])]
+                    wanted = [v for v in job.get("voices", []) if v in known]
+                    if not wanted:
+                        return self.reply({"error": "This model has no such voice in this language."}, 400)
+                    if model_fit(model) == "no":
+                        return self.reply({"error": "This model is too big for this Mac."}, 400)
+                    state.running, state.stop, state.error, state.lines, state.current = True, False, "", [], "Voice samples"
+                    state.kind, state.title = "Creating voice samples" if len(wanted) > 1 else "Creating a voice sample", MODEL_LABELS.get(model, model)
+                    state.percent, state.left, state.segments, state.now = 0, "", [], 0
+                    jobs.put({"kind": "voices", "model": model, "lang": lang, "voices": wanted})
                     self.reply({"ok": True})
                 elif self.path == "/preview":
                     if state.running:
@@ -2081,6 +2407,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
             webbrowser.open(url)
         return 0
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=load_published, daemon=True).start()
     print(f"book2audio is running at {url}  (close this window or press Ctrl+C to quit)")
     if open_browser and not restarted:
         webbrowser.open(url)
@@ -2098,6 +2425,8 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 book, opts = session["book"], options(job)
                 first = min(n for n in job.get("chapters", [1]) if 1 <= n <= len(book.chapters))
                 run_compare(sample_of(book, first), language_for(book, opts), opts, session["out"])
+            elif job["kind"] == "voices":
+                run_voice_samples(job["model"], job["lang"], job["voices"], args)
             elif job["kind"] == "preview":
                 book, opts = session["book"], options(job)
                 first = min(n for n in job.get("chapters", [1]) if 1 <= n <= len(book.chapters))
@@ -2106,7 +2435,8 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
             else:
                 run_queue()
         except Stopped:
-            state.log("Stopped. Everything read so far is kept: resume the queue to continue.")
+            state.log("Stopped. The samples already made are kept." if job["kind"] == "voices"
+                      else "Stopped. Everything read so far is kept: resume the queue to continue.")
         except KeyboardInterrupt:
             raise
         except BaseException as e:
@@ -2116,6 +2446,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
         finally:
             state.running = False
             state.i = state.total = 0
+            state.sampling = ""
     server.shutdown()
     server.server_close()
     if session["restart"]:

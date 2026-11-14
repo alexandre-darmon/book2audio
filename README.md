@@ -71,6 +71,18 @@ The language is read from the book, and you can change it in the page. For each 
 | Pocket TTS (Kyutai) | French, English, German, Spanish, Italian, Portuguese | Runs on the CPU, for Macs with little memory |
 | Kyutai TTS 1.6B | French, English | Experimental: not confirmed on a real Mac yet |
 
+### Choosing a voice
+
+Each model comes with several voices: 2 in French and 5 in English for Voxtral, 27 for Pocket TTS in each of its languages, 24 in English for Kokoro. The page lists them all. Press play next to a voice to hear it say the same two sentences as the others, so only the voice differs.
+
+A sample that has been published with the project plays at once, without loading a model. Any other sample is created on your Mac the first time you ask for it, then kept in `~/Audiobooks/.voices`. "Create all samples" loads the model once and makes every missing one.
+
+To make every sample from the command line, in French and English, for each model that fits your Mac:
+
+```bash
+book2audio --voice-samples
+```
+
 French is the language tested most. English and the others use the same models and the same code, but have had less listening.
 
 Pocket TTS and Kyutai TTS install themselves in a separate environment the first time you pick them. Voxtral 4-bit is a 2.5 GB download (8 GB for the full size) and its licence is non-commercial (CC BY-NC 4.0): fine for listening to your own books, not for selling audio.

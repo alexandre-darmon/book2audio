@@ -15,13 +15,16 @@ One goal: French audiobooks that sound read, made on your own Mac, with an insta
 - Reading rules for French and English: abbreviations, Roman numerals, ordinals, clock times, dialogue dashes
 - Kyutai TTS 1.6B as an experimental model
 - `--demo`: built-in sample read by each model, with a benchmark file
+- Voice picker: every voice of each model, with a sample to play next to it
+- Tab icon
 
 ## Next
 
-1. **Finish the benchmark.** Audio samples for each model in the repo, speeds for Kokoro and Kyutai TTS, and results from Macs other than a 32 GB M6. Run `book2audio --demo` and share the BENCHMARK file.
-2. **Confirm Kyutai TTS on a real Mac**, then decide whether it replaces Voxtral 4-bit for French.
-3. **English as good as French.** Compare Kokoro and Voxtral 4-bit by ear on English books.
-4. **Reading rules, round two.** Numbers and dates in full, foreign words, names.
+1. **Publish the voice samples.** Run `book2audio --voice-samples -o voices` on a Mac and push the `voices` folder: the page then plays each voice at once for everyone, in French and English.
+2. **Finish the benchmark.** Audio samples for each model in the repo, speeds for Kokoro and Kyutai TTS, and results from Macs other than a 32 GB M6. Run `book2audio --demo` and share the BENCHMARK file.
+3. **Confirm Kyutai TTS on a real Mac**, then decide whether it replaces Voxtral 4-bit for French.
+4. **English as good as French.** Compare Kokoro and Voxtral 4-bit by ear on English books.
+5. **Reading rules, round two.** Numbers and dates in full, foreign words, names.
 
 ## Later
 
