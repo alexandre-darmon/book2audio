@@ -1010,14 +1010,15 @@ def _voxtral(*ids: str) -> list[tuple[str, str, str]]:
             for v in ids]
 
 
-# Pocket TTS ships the same 27 voices for every language it speaks. The one Kyutai uses by default comes first.
-POCKET_VOICES = ("alba anna azelma bill_boerst caro_davy charles cosette daan eponine estelle eve fantine george giovanni "
-                 "jane javert jean juergen lola marius mary michael paul peter_yearsley rafael stuart_bell vera").split()
+# Pocket TTS ships the same 27 voices for every language, but each voice was recorded in one language
+# and keeps a strong accent in the others (heard in French). Only the voices of the language are offered.
+POCKET_VOICES = ("alba anna azelma bill_boerst caro_davy charles cosette eponine eve fantine george "
+                 "jane javert jean marius mary michael paul peter_yearsley stuart_bell vera").split()     # English
 
 
-def _pocket(first: str) -> list[tuple[str, str, str]]:
-    return [(v, v.replace("_", " ").title(), "Default" if v == first else "")
-            for v in [first] + [x for x in POCKET_VOICES if x != first]]
+def _pocket(code: str, first: str) -> list[tuple[str, str, str]]:
+    names = [first] + ([x for x in POCKET_VOICES if x != first] if code == "en" else [])
+    return [(v, v.replace("_", " ").title(), "Default" if v == first and len(names) > 1 else "") for v in names]
 
 
 _VOX = {**{code: _voxtral(f"{code}_female", f"{code}_male") for code in ("fr", "es", "de", "it", "pt", "nl", "hi")},
@@ -1027,7 +1028,7 @@ VOICE_CATALOG = {
     "voxtral-4bit": _VOX,
     "voxtral": _VOX,
     "kyutai": {code: [(voice, "Kyutai voice", "Default")] for code, voice in KYUTAI_VOICES.items()},
-    "pocket": {code: _pocket(default) for code, (_, default) in POCKET.items()},
+    "pocket": {code: _pocket(code, default) for code, (_, default) in POCKET.items()},
     "kokoro": {
         "fr": _kokoro("ff_siwis"),
         "en": _kokoro("af_heart", "af_bella", "af_nicole", "af_sarah", "af_aoede", "af_kore", "af_nova", "af_sky",
