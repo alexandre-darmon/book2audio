@@ -1895,7 +1895,7 @@ PAGE = r"""<!doctype html>
   .ch.done .t, .ch.skip .t { color:var(--soft); }
   .tagk { color:var(--soft); font-size:11px; margin-left:8px; border:1px solid var(--line); border-radius:4px; padding:1px 6px; }
   .ch.done .tagk { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 40%, var(--line)); }
-  .icloud { display:flex; align-items:center; gap:8px; margin-top:14px; }
+  .icloud { display:flex; align-items:center; gap:8px; margin-top:14px; } .icloud.hide { display:none; }
   .info { position:relative; display:inline-flex; }
   .i { width:18px; height:18px; padding:0; border-radius:50%; font-size:11px; font-weight:700; font-style:italic; font-family:Georgia, serif; line-height:1; color:var(--soft); background:transparent; border-color:var(--faint); }
   #tip { position:absolute; left:50%; bottom:calc(100% + 10px); transform:translateX(-50%); width:300px; padding:12px 14px; border-radius:8px; background:var(--ink); color:var(--bg);
@@ -1994,14 +1994,14 @@ PAGE = r"""<!doctype html>
       <label class="check"><input type="checkbox" id="cok"> This is my own voice, or the person has agreed to this use</label>
       <div class="crow"><button type="button" class="main" id="csave" disabled>Save this voice</button><span id="cnote">The recording stays on this Mac.</span></div>
     </div>
-    <div class="icloud"><label class="check"><input type="checkbox" id="iphone" checked> Copy the finished audiobook to iCloud Drive</label>
-      <span class="info"><button type="button" class="i" aria-label="What does this do?" aria-describedby="tip">i</button>
-        <span id="tip" role="tooltip">When the book is finished, its audiobook file (.m4b) is copied to iCloud Drive, in a folder named Audiobooks. From there it appears on your iPhone and your other Apple devices: open the Files app, then iCloud Drive, then Audiobooks. The original stays on this Mac.</span></span></div>
       <div class="optrow"><button id="compare">Compare models</button><button id="folder" class="quiet">Open folder</button></div>
     </div>
     <div id="summary"></div>
     <div class="pick"><h3>Chapters</h3><a id="all">All chapters</a><a id="todo">Only those not done</a><a id="none">None</a></div>
     <div id="chapters"></div>
+    <div class="icloud" id="icloud"><label class="check"><input type="checkbox" id="iphone" checked> Also send it to my iPhone (iCloud Drive)</label>
+      <span class="info"><button type="button" class="i" aria-label="What does this do?" aria-describedby="tip">i</button>
+        <span id="tip" role="tooltip">When the book is finished, its audiobook file (.m4b) is copied to iCloud Drive, in a folder named Audiobooks. From there it appears on your iPhone and your other Apple devices: open the Files app, then iCloud Drive, then Audiobooks. The original stays on this Mac.</span></span></div>
     <div class="actions">
       <button id="preview" class="quiet">Hear one minute first</button>
       <button id="add" class="main">Create the audiobook</button>
@@ -2062,7 +2062,7 @@ const WORDS = { ...MODELS_FR,
   "done":"fait", "front matter":"pages liminaires",
   "Its speed on this Mac is not known yet: run a comparison to measure it.":"Sa vitesse sur ce Mac n'est pas encore connue : lancez une comparaison pour la mesurer.",
   "Tick at least one chapter.":"Cochez au moins un chapitre.", "Add a voice first: this model reads with a voice you give it.":"Ajoutez d'abord une voix : ce modèle lit avec une voix que vous lui donnez.",
-  "Copy the finished audiobook to iCloud Drive":"Copier le livre audio terminé dans iCloud Drive", "What does this do?":"À quoi ça sert ?",
+  "Also send it to my iPhone (iCloud Drive)":"L'envoyer aussi sur mon iPhone (iCloud Drive)", "What does this do?":"À quoi ça sert ?",
   "When the book is finished, its audiobook file (.m4b) is copied to iCloud Drive, in a folder named Audiobooks. From there it appears on your iPhone and your other Apple devices: open the Files app, then iCloud Drive, then Audiobooks. The original stays on this Mac.":
     "Quand le livre est terminé, son fichier de livre audio (.m4b) est copié dans iCloud Drive, dans un dossier nommé Audiobooks. Il apparaît alors sur votre iPhone et vos autres appareils Apple : ouvrez l'app Fichiers, puis iCloud Drive, puis Audiobooks. L'original reste sur ce Mac.",
   "Play a 1-minute preview":"Écouter un aperçu d'une minute", "Compare models":"Comparer les modèles", "Open folder":"Ouvrir le dossier", "Remove":"Retirer",
@@ -2247,6 +2247,7 @@ function showPlan() {                                   // what will be used, in
 }
 function showOptions(open) { $("opts").classList.toggle("hide", !open); $("plan").classList.toggle("open", open);
   $("change").textContent = open ? "Hide options" : "Change"; $("change").setAttribute("aria-expanded", open); }
+$("iphone").onchange = () => { try { localStorage.setItem("book2audio.iphone", $("iphone").checked ? "yes" : "no"); } catch (e) {} };
 $("change").onclick = () => showOptions($("opts").classList.contains("hide"));
 function showVoices(s) {
   if (JSON.stringify(s.my_voices || []) !== JSON.stringify(myVoices)) { myVoices = s.my_voices || []; if (book && cloning()) fillVoices(); }
@@ -2290,6 +2291,9 @@ function showBook(b) {
     $("chapters").append(row);
   });
   $("book").classList.remove("hide"); $("player").classList.add("hide"); $("cmp").classList.add("hide"); showOptions(false);
+  $("icloud").classList.toggle("hide", !b.catalog.icloud);          // offered only where iCloud Drive is on; the last choice is kept
+  let last = null; try { last = localStorage.getItem("book2audio.iphone"); } catch (e) {}
+  $("iphone").checked = last !== "no";
   layout(); countSelected(); $("book").scrollIntoView({ behavior:"smooth", block:"start" });
 }
 function closeBook() { vplayer.pause(); book = null; $("book").classList.add("hide"); layout(); }
@@ -2301,7 +2305,7 @@ function settings() {
   const chapters = countSelected(); if (!chapters.length) { fail("Tick at least one chapter."); return null; }
   if (cloning() && !$("voice").value) { fail("Add a voice first: this model reads with a voice you give it."); return null; }
   $("err").textContent = "";
-  return { chapters, lang:$("lang").value, model:$("model").value, voice:$("voice").value, iphone:$("iphone").checked };
+  return { chapters, lang:$("lang").value, model:$("model").value, voice:$("voice").value, iphone:!!book.catalog.icloud && $("iphone").checked };
 }
 let hasQueue = false;
 function layout() {                                   // the drop zone shrinks once there is something else to look at
@@ -2561,6 +2565,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                 "speaks": {m: v["langs"].split() for m, v in MODELS.items()},
                 "fits": {m: model_fit(m) for m in MODELS},
                 "recommended": {code: recommend(code)["recommended"] for code in LANGUAGES},
+                "icloud": ICLOUD.exists(),             # no iCloud Drive on this Mac: the page does not offer the copy
                 "voices": {m: {code: [{"id": v, "name": name, "note": note, "stem": voice_stem(m, code, v)} for v, name, note in rows]
                                for code, rows in by_lang.items()} for m, by_lang in VOICE_CATALOG.items()}}
 

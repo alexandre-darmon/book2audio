@@ -68,7 +68,7 @@ At the top of the page, a green light shows that book2audio is on. The page foll
 
 ## Listen on the iPhone
 
-Keep "Copy the finished audiobook to iCloud Drive" ticked. When the book is finished, the `.m4b` is copied to `iCloud Drive/Audiobooks`, so it appears on your iPhone and your other Apple devices. A macOS notification tells you when a book is ready. On the phone, open it from the Files app, or import it into an audiobook player such as BookPlayer, which keeps your position and shows the chapters.
+Keep "Also send it to my iPhone (iCloud Drive)" ticked. It is offered when iCloud Drive is turned on, and your choice is kept for the next book. When the book is finished, the `.m4b` is copied to `iCloud Drive/Audiobooks`, so it appears on your iPhone and your other Apple devices. A macOS notification tells you when a book is ready. On the phone, open it from the Files app, or import it into an audiobook player such as BookPlayer, which keeps your position and shows the chapters.
 
 ## Languages and voices
 
