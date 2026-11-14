@@ -1111,6 +1111,7 @@ def fetch_published(stem: str) -> Path | None:
     try:
         data = urllib.request.urlopen(SAMPLES_URL + name, timeout=15).read()
     except Exception:
+        _published.pop(stem, None)                   # not reachable: the page will offer to create it on this Mac
         return None
     VOICE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = VOICE_DIR / (".tmp-" + name)
@@ -1828,6 +1829,7 @@ function paintVoices() {                              // only classes and labels
   $("vall").textContent = `Create ${missing.length === list.length ? "all" : "the missing"} ${missing.length} samples` + (speed ? `, about ${Math.max(1, Math.round(secs / 60))} min` : "");
 }
 function startSample(v) { playing = v.stem; vplayer.src = "/voice?s=" + encodeURIComponent(v.stem); return vplayer.play(); }
+vplayer.addEventListener("error", () => { playing = ""; poll(); toast("This sample could not be fetched. Press play again to create it on this Mac."); });
 function playVoice(v) {
   if (playing === v.stem && !vplayer.paused) { vplayer.pause(); return; }
   if (samples.has(v.stem)) { startSample(v).catch(fail); return; }
