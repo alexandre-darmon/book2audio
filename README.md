@@ -73,7 +73,7 @@ The language is read from the book, and you can change it in the page. For each 
 
 ### Choosing a voice
 
-Each model comes with several voices: 2 in French and 5 in English for Voxtral, 21 in English for Pocket TTS and one in each of its other languages, 24 in English for Kokoro. Pocket TTS has more voices on paper, but they keep a strong accent outside their own language, so they are not offered. The page lists them all. Press play next to a voice to hear it say the same two sentences as the others, so only the voice differs.
+Each model comes with several voices: 2 in French and 5 in English for Voxtral, 6 for Pocket TTS in each of its languages, 24 in English for Kokoro. Under each voice, a line says whether it is a woman or a man, and its tone or accent. The page lists them all. Press play next to a voice to hear it say the same two sentences as the others, so only the voice differs.
 
 A sample that has been published with the project plays at once, without loading a model. Any other sample is created on your Mac the first time you ask for it, then kept in `~/Audiobooks/.voices`. "Create all samples" loads the model once and makes every missing one.
 
@@ -148,3 +148,7 @@ See [ROADMAP.md](ROADMAP.md). Next up: checking the machine and recommending the
 - Chapters come from the book's table of contents. A book that puts everything in one file gives one long chapter.
 - Footnote numbers and tables are skipped.
 - Only convert books you own, for your own listening.
+
+## Licence
+
+The code is under the MIT licence. The voice models keep their own licences: Voxtral is non-commercial (CC BY-NC 4.0).

@@ -1010,17 +1010,20 @@ def _voxtral(*ids: str) -> list[tuple[str, str, str]]:
             for v in ids]
 
 
-# Pocket TTS ships the same 27 voices for every language, but each voice was recorded in one language
-# and keeps a strong accent in the others (heard in French). Only the voices of the language are offered.
-POCKET_VOICES = ("alba anna azelma bill_boerst caro_davy charles cosette eponine eve fantine george "
-                 "jane javert jean marius mary michael paul peter_yearsley stuart_bell vera").split()     # English
+# Pocket TTS ships 27 voices. Six are offered per language: the one recorded in that language, then five
+# of the original English voices, which keep a foreign accent outside English (heard in French).
+POCKET_ENGLISH = {"alba": "Woman", "cosette": "Woman", "fantine": "Woman", "marius": "Man", "javert": "Man", "jean": "Man"}
+POCKET_NATIVE = {"estelle": "Woman", "lola": "Woman", "juergen": "Man", "giovanni": "Man", "rafael": "Man"}
 
 
 def _pocket(code: str, first: str) -> list[tuple[str, str, str]]:
-    names = [first] + ([x for x in POCKET_VOICES if x != first] if code == "en" else [])
-    return [(v, v.replace("_", " ").title(), "Default" if v == first and len(names) > 1 else "") for v in names]
+    if code == "en":
+        return [(v, v.capitalize(), who + (", default" if v == first else "")) for v, who in POCKET_ENGLISH.items()]
+    others = [(v, v.capitalize(), f"{who}, foreign accent") for v, who in list(POCKET_ENGLISH.items())[:6] if v != "jean"]
+    return [(first, first.capitalize(), f"{POCKET_NATIVE[first]}, {LANG_NAMES_UI[code]}, default")] + others
 
 
+LANG_NAMES_UI = {"fr": "French", "de": "German", "es": "Spanish", "it": "Italian", "pt": "Portuguese"}
 _VOX = {**{code: _voxtral(f"{code}_female", f"{code}_male") for code in ("fr", "es", "de", "it", "pt", "nl", "hi")},
         "en": _voxtral("neutral_female", "neutral_male", "casual_female", "casual_male", "cheerful_female"),
         "ar": _voxtral("ar_male")}
