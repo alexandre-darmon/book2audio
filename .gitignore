@@ -13,3 +13,7 @@ __pycache__/
 build/
 *.egg-info/
 dist/
+
+# the published voice samples are the exception
+!voices/*.m4a
+!voices/*.wav
