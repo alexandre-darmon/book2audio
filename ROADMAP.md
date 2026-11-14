@@ -17,6 +17,8 @@ One goal: French audiobooks that sound read, made on your own Mac, with an insta
 - `--demo`: built-in sample read by each model, with a benchmark file
 - Voice picker: every voice of each model, with a sample to play next to it
 - Tab icon
+- Interface in French or English, following the browser's language
+- Starts without a Terminal window after install
 - Your own voice: record 15 seconds and have books read with it (Chatterbox), to be confirmed on a real Mac
 
 ## Next

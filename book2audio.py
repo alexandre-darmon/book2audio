@@ -1959,7 +1959,7 @@ PAGE = r"""<!doctype html>
     </div>
   </section>
 
-  <div id="drop" tabindex="0" role="button"><strong>Drop an ebook here, or click to choose one</strong><span>EPUB without DRM. AZW3 and MOBI work if Calibre is installed.</span></div>
+  <div id="drop" tabindex="0" role="button"><strong>Drop an ebook here, or click to choose one</strong><span>EPUB, AZW3 or MOBI, without DRM.</span></div>
   <input id="file" type="file" accept=".epub,.azw3,.azw,.mobi" class="hide">
   <p id="err" role="alert"></p>
   <ol id="steps"><li><b>Drop a book</b>It stays on this Mac.</li><li><b>Hear the voice</b>One minute, before you commit.</li><li><b>Queue it and leave</b>It reads chapter by chapter and can be paused at any time.</li></ol>
@@ -2004,6 +2004,131 @@ PAGE = r"""<!doctype html>
 <div id="toast" role="status"></div>
 
 <script>
+// ---- French interface when the browser is in French. English otherwise, and whenever the language cannot be read.
+// The page is written in English. In French, every piece of text is swapped as it reaches the screen:
+// whole sentences from WORDS, sentences with a name or a number in them from RULES.
+let FR = false;
+try { FR = String(navigator.language || (navigator.languages || [])[0] || "").toLowerCase().startsWith("fr"); } catch (e) { FR = false; }
+const LANGS = { French:"français", English:"anglais", Spanish:"espagnol", German:"allemand", Italian:"italien", Portuguese:"portugais",
+  Dutch:"néerlandais", Hindi:"hindi", Arabic:"arabe", Japanese:"japonais", Chinese:"chinois" };
+const NOTES = { Woman:"Femme", Man:"Homme", American:"américain", British:"britannique", default:"par défaut", Default:"Par défaut",
+  "foreign accent":"accent étranger", Casual:"Décontracté", Cheerful:"Enjoué", Neutral:"Neutre", ...LANGS };
+const MODELS_FR = { "Natural (Voxtral 4-bit)":"Naturel (Voxtral 4-bit)", "Natural, full size (Voxtral, slower)":"Naturel, taille complète (Voxtral, plus lent)",
+  "Kyutai TTS (experimental)":"Kyutai TTS (expérimental)", "Light, on the CPU (Pocket TTS)":"Léger, sur le processeur (Pocket TTS)",
+  "Fast (Kokoro)":"Rapide (Kokoro)", "Your own voice (experimental)":"Votre propre voix (expérimental)" };
+const WORDS = { ...MODELS_FR,
+  "On":"Allumé", "Off":"Éteint", "book2audio is off":"book2audio est éteint", "book2audio (off)":"book2audio (éteint)",
+  "Everything read so far is kept, and the queue will be there next time. To turn it on again, open book2audio from your Applications folder. This page reconnects by itself.":
+    "Tout ce qui a été lu est conservé, et la file d'attente sera là la prochaine fois. Pour le rallumer, ouvrez book2audio depuis votre dossier Applications. Cette page se reconnecte toute seule.",
+  "Restarting":"Redémarrage", "This page comes back by itself in a few seconds. Nothing read so far is lost.":"Cette page revient toute seule dans quelques secondes. Rien de ce qui a été lu n'est perdu.",
+  "Restart book2audio":"Redémarrer book2audio", "Restart, for example after an update. A book being read goes on where it stopped.":"Redémarrer, par exemple après une mise à jour. Un livre en cours reprend là où il s'est arrêté.",
+  "Turn book2audio off":"Éteindre book2audio", "Turn book2audio off. Everything read so far is kept.":"Éteindre book2audio. Tout ce qui a été lu est conservé.",
+  "Pause":"Pause", "Show details":"Afficher les détails", "Hide details":"Masquer les détails", "Queue":"File d'attente",
+  "Start reading":"Lancer la lecture", "Resume reading":"Reprendre la lecture",
+  "Drop an ebook here, or click to choose one":"Déposez un livre numérique ici, ou cliquez pour en choisir un", "Add another ebook":"Ajouter un autre livre",
+  "EPUB, AZW3 or MOBI, without DRM.":"EPUB, AZW3 ou MOBI, sans DRM.",
+  "Drop a book":"Déposez un livre", "It stays on this Mac.":"Il reste sur ce Mac.", "Hear the voice":"Écoutez la voix", "One minute, before you commit.":"Une minute, avant de vous lancer.",
+  "Queue it and leave":"Mettez-le en file et partez", "It reads chapter by chapter and can be paused at any time.":"La lecture se fait chapitre par chapitre et peut être mise en pause à tout moment.",
+  "Close":"Fermer", "Close this book":"Fermer ce livre", "Language":"Langue", "Voice model":"Modèle de voix", "Voice":"Voix",
+  "Chapters of this book":"Chapitres de ce livre", "Current chapter":"Chapitre en cours",
+  "Add a voice":"Ajouter une voix",
+  "Read this aloud in a quiet room, at your normal pace. About 15 seconds are enough. A recording you already have works too.":
+    "Lisez ce texte à voix haute dans une pièce calme, à votre rythme habituel. Une quinzaine de secondes suffisent. Un enregistrement que vous avez déjà convient aussi.",
+  "Record":"Enregistrer", "Record again":"Recommencer", "Stop":"Arrêter", "Choose a recording":"Choisir un enregistrement",
+  "Name of this voice":"Nom de cette voix", "My voice":"Ma voix",
+  "This is my own voice, or the person has agreed to this use":"C'est ma propre voix, ou la personne a donné son accord pour cet usage",
+  "Save this voice":"Enregistrer cette voix", "The recording stays on this Mac.":"L'enregistrement reste sur ce Mac.",
+  "Your recording":"Votre enregistrement", "Kyutai voice":"Voix Kyutai", "Delete":"Supprimer", "Delete for good?":"Supprimer définitivement ?", "Sample failed":"Échantillon en échec",
+  "No voice yet: add one below.":"Aucune voix pour l'instant : ajoutez-en une ci-dessous.", "Creating samples...":"Création des échantillons...",
+  "Press play to hear a voice.":"Appuyez sur lecture pour écouter une voix.",
+  "Press play to hear a voice. A dashed button creates its sample first.":"Appuyez sur lecture pour écouter une voix. Un bouton en pointillés crée d'abord son échantillon.",
+  "Press play to hear a voice. Its sample is created the first time, then kept on this Mac.":"Appuyez sur lecture pour écouter une voix. Son échantillon est créé la première fois, puis conservé sur ce Mac.",
+  "This sample could not be fetched. Press play again to create it on this Mac.":"Cet échantillon n'a pas pu être téléchargé. Appuyez de nouveau sur lecture pour le créer sur ce Mac.",
+  "This browser cannot record. Choose a recording instead.":"Ce navigateur ne peut pas enregistrer. Choisissez plutôt un enregistrement.",
+  "The microphone is not available. Allow it for this page, or choose a recording instead.":"Le micro n'est pas disponible. Autorisez-le pour cette page, ou choisissez plutôt un enregistrement.",
+  "Chapters":"Chapitres", "All chapters":"Tous les chapitres", "Only those not done":"Seulement ceux qui restent", "None":"Aucun",
+  "done":"fait", "front matter":"pages liminaires",
+  "Its speed on this Mac is not known yet: run a comparison to measure it.":"Sa vitesse sur ce Mac n'est pas encore connue : lancez une comparaison pour la mesurer.",
+  "Tick at least one chapter.":"Cochez au moins un chapitre.", "Add a voice first: this model reads with a voice you give it.":"Ajoutez d'abord une voix : ce modèle lit avec une voix que vous lui donnez.",
+  "Copy the finished audiobook to iCloud Drive":"Copier le livre audio terminé dans iCloud Drive", "What does this do?":"À quoi ça sert ?",
+  "When the book is finished, its audiobook file (.m4b) is copied to iCloud Drive, in a folder named Audiobooks. From there it appears on your iPhone and your other Apple devices: open the Files app, then iCloud Drive, then Audiobooks. The original stays on this Mac.":
+    "Quand le livre est terminé, son fichier de livre audio (.m4b) est copié dans iCloud Drive, dans un dossier nommé Audiobooks. Il apparaît alors sur votre iPhone et vos autres appareils Apple : ouvrez l'app Fichiers, puis iCloud Drive, puis Audiobooks. L'original reste sur ce Mac.",
+  "Play a 1-minute preview":"Écouter un aperçu d'une minute", "Compare models":"Comparer les modèles", "Open folder":"Ouvrir le dossier", "Remove":"Retirer",
+  "Add to the queue":"Ajouter à la file", "Same passage, each model, timed on this Mac":"Même passage, chaque modèle, chronométré sur ce Mac",
+  "Waiting":"En attente", "Reading now":"Lecture en cours", "Ready":"Prêt", "Failed":"Échec",
+  "Copied to iCloud Drive. On your iPhone: Files, iCloud Drive, Audiobooks, then open the .m4b file in an audiobook player.":
+    "Copié dans iCloud Drive. Sur votre iPhone : Fichiers, iCloud Drive, Audiobooks, puis ouvrez le fichier .m4b dans un lecteur de livres audio.",
+  "The audiobook is the .m4b file in its folder.":"Le livre audio est le fichier .m4b dans son dossier.",
+  "Everything in the queue has been read.":"Toute la file d'attente a été lue.", "The queue is finished.":"La file d'attente est terminée.",
+  "Working":"En cours", "Stopped on an error":"Arrêté sur une erreur", "Getting the voice model ready...":"Préparation du modèle de voix...",
+  "Getting ready":"Préparation", "Preview":"Aperçu", "Comparing models":"Comparaison des modèles", "Creating voice samples":"Création des échantillons de voix",
+  "Creating a voice sample":"Création d'un échantillon de voix", "Finishing":"Finalisation", "finishing":"Finalisation",
+  "Estimating the time left...":"Estimation du temps restant...", "estimating the time left...":"Estimation du temps restant...",
+  "Pausing after this passage. The position is saved.":"Pause après ce passage. La position est enregistrée.",
+  "Already working. Stop it first.":"Déjà en cours. Arrêtez d'abord.", "Already working.":"Déjà en cours.", "Choose a book first.":"Choisissez d'abord un livre.",
+  "Confirm first that this is your voice, or that the person agrees.":"Confirmez d'abord que c'est votre voix, ou que la personne est d'accord.",
+  "This recording is too big. 10 to 20 seconds are enough.":"Cet enregistrement est trop gros. 10 à 20 secondes suffisent.",
+  "This file is not a recording that can be read.":"Ce fichier n'est pas un enregistrement lisible.",
+  "Wait until nothing is being read.":"Attendez que plus rien ne soit en cours de lecture.",
+  "Voice samples can be created when nothing else is being read.":"Les échantillons de voix se créent quand rien d'autre n'est en cours de lecture.",
+  "This model has no such voice in this language.":"Ce modèle n'a pas cette voix dans cette langue.", "This model is too big for this Mac.":"Ce modèle est trop gros pour ce Mac.",
+  "This book is being read right now.":"Ce livre est en cours de lecture.",
+  "This model reads with a voice you give it: record or choose one first.":"Ce modèle lit avec une voix que vous lui donnez : enregistrez-en ou choisissez-en une d'abord." };
+Object.keys(LANGS).forEach(k => { WORDS[k] = LANGS[k][0].toUpperCase() + LANGS[k].slice(1); });
+Object.assign(WORDS, { Woman:"Femme", Man:"Homme" });
+const num = s => String(s).replace(".", ",");
+const RULES = [
+  [/^(.+?), (recommended|too big for this Mac|tight on this Mac|no (\w+) voice)$/, (m, label, tail, lang) => !MODELS_FR[label] ? m :
+    MODELS_FR[label] + (tail === "recommended" ? ", recommandé" : tail.startsWith("too") ? ", trop gros pour ce Mac" : tail.startsWith("tight") ? ", juste sur ce Mac" : `, pas de voix en ${LANGS[lang] || lang}`)],
+  [/^, (\w+) according to the book$/, (m, lang) => `, ${LANGS[lang] || lang} d'après le livre`],
+  [/^(.*), saved in (~?\/.*)$/, (m, who, where) => `${who}, enregistré dans ${where}`],
+  [/^(\d+) chapters?, (.+) of audio\.$/, (m, n, d) => `${n} chapitre${n === "1" ? "" : "s"}, ${num(d)} d'audio.`],
+  [/^About (.+) to create on this Mac with this model\.$/, (m, d) => `Environ ${num(d)} à créer sur ce Mac avec ce modèle.`],
+  [/^About (.+) left \(done around (.+)\)$/i, (m, d, t) => `Encore environ ${d} (fin vers ${t})`],
+  [/^Reading (.+)\.\.\.$/, (m, f) => `Lecture de ${f}...`],
+  [/^(\d+) of (\d+) chapters$/, (m, a, b) => `${a} sur ${b} chapitres`],
+  [/^(\d+) of (\d+) chapters done$/, (m, a, b) => `${a} chapitres terminés sur ${b}`],
+  [/^(\d+)% of this (chapter|passage)$/, (m, p, w) => `${p} % de ce ${w === "chapter" ? "chapitre" : "passage"}`],
+  [/^(\d+) books? waiting$/, (m, n) => `${n} livre${n === "1" ? "" : "s"} en attente`],
+  [/^Book (\d+) of (\d+)$/, (m, a, b) => `Livre ${a} sur ${b}`],
+  [/^Failed: (.*)$/s, (m, why) => `Échec : ${french(why)}`],
+  [/^(.+), voice (\d+) of (\d+)$/, (m, model, a, b) => `${model}, voix ${a} sur ${b}`],
+  [/^Create (all|the missing) (\d+) samples(?:, about (\d+) min)?$/, (m, which, n, min) => `Créer les ${n} échantillons${which === "all" ? "" : " manquants"}${min ? `, environ ${min} min` : ""}`],
+  [/^Creating the sample of (.+)$/, (m, v) => `Création de l'échantillon de ${french(v)}`],
+  [/^Create and play the sample of (.+)$/, (m, v) => `Créer et écouter l'échantillon de ${french(v)}`],
+  [/^Play (.+)$/, (m, v) => `Écouter ${french(v)}`, "label"], [/^Stop (.+)$/, (m, v) => `Arrêter ${french(v)}`, "label"],
+  [/^Deleted: (.+)$/, (m, v) => `Supprimé : ${v}`],
+  [/^Voice saved: (.+)\. Press play to hear it read\.$/, (m, v) => `Voix enregistrée : ${v}. Appuyez sur lecture pour l'entendre lire.`],
+  [/^The sample of (.+) is ready: press play\.$/, (m, v) => `L'échantillon de ${v} est prêt : appuyez sur lecture.`],
+  [/^Added to the queue: (.+)$/s, (m, v) => `Ajouté à la file : ${v}`],
+  [/^(\d+) s, that is enough$/, (m, n) => `${n} s, c'est suffisant`],
+  [/^([\d.]+)x real time: (\d+) s of audio in (\d+) s$/, (m, x, a, c) => `${num(x)}x le temps réel : ${a} s d'audio en ${c} s`],
+  [/^on (.+), (\d+) GB$/, (m, chip, gb) => `sur ${chip}, ${gb} Go`],
+  [/^This recording lasts (\d+) seconds\. 10 to 20 seconds of speech work best\.$/, (m, n) => `Cet enregistrement dure ${n} secondes. 10 à 20 secondes de parole donnent le meilleur résultat.`],
+  [/^([A-Za-z ]+(?:, [A-Za-z ]+)+)$/, (m, list) => { const parts = list.split(", "); return parts.every(p => NOTES[p]) ? parts.map(p => NOTES[p]).join(", ") : m; }],
+];
+function french(s, label) {                          // label: the text is a button's spoken label, not text on the page
+  const core = s.trim(); if (!core) return s;
+  let out = Object.prototype.hasOwnProperty.call(WORDS, core) ? WORDS[core] : null;
+  if (out === null) for (const [re, fn, only] of RULES) { if (only && !label) continue; const m = core.match(re); if (m) { out = fn(...m); break; } }
+  return out === null || out === core ? s : s.replace(core, () => out);
+}
+const KEEP = "#log, #title, #chapters .t, .q .t, #cscript, script, style";      // the book's own words stay as they are
+const ATTRS = ["title", "aria-label", "placeholder"];
+const labels = node => ATTRS.forEach(a => { const v = node.getAttribute(a); if (v) { const t = french(v, true); if (t !== v) node.setAttribute(a, t); } });
+function translate(node) {
+  if (node.nodeType === 3) { const box = node.parentElement; if (!box) return;
+    if (box.closest(KEEP) && !box.closest(".tagk")) return;
+    if (box.closest("#nowtitle") && !/, voice \d+ of \d+$/.test(node.nodeValue)) return;      // a book title, or a model and its voice
+    const t = french(node.nodeValue); if (t !== node.nodeValue) node.nodeValue = t; return; }
+  if (node.nodeType !== 1 || node.matches("script, style, #log")) return;
+  labels(node); node.childNodes.forEach(translate);
+}
+if (FR) try {
+  document.documentElement.lang = "fr"; translate(document.body);
+  new MutationObserver(list => list.forEach(m => { if (m.type === "childList") m.addedNodes.forEach(translate); else if (m.type === "attributes") labels(m.target); else translate(m.target); }))
+    .observe(document.documentElement, { childList:true, subtree:true, characterData:true, attributes:true, attributeFilter:ATTRS });
+} catch (e) { FR = false; }
 const $ = id => document.getElementById(id);
 const STATUS = { waiting:"Waiting", running:"Reading now", done:"Ready", error:"Failed" };
 let book = null, lastPreview = 0, timer = null, speeds = {}, quitting = false, restarting = false, offline = false, boot = "", wasRunning = false, toastTimer = null;

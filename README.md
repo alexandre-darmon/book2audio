@@ -11,6 +11,11 @@
 
 book2audio checks your Mac and picks the voice model that fits it. A bigger Mac gets a more natural voice, a smaller one takes a lighter model. No account, no API key, nothing uploaded. Listen on your iPhone.
 
+> [!IMPORTANT]
+> **This tool is intended for use with non-DRM, legally acquired eBooks only.**
+> The authors are not responsible for any misuse of this software or any resulting legal consequences.
+> Use this tool responsibly and in accordance with all applicable laws.
+
 ## Why book2audio?
 
 - **A voice that sounds read, not synthesized.** Books use Voxtral (4-bit) when the Mac has room for it, in French, English and seven other languages. You pick the voice and hear a 1-minute preview first.
@@ -19,6 +24,7 @@ book2audio checks your Mac and picks the voice model that fits it. A bigger Mac 
 - **Queue several books and leave.** They are read one after the other. The queue is kept on disk.
 
 Input: EPUB, AZW3 and MOBI, as long as the file has no DRM. Nothing else to install.
+The page is in French when your browser is in French, and in English otherwise.
 Output: one `.m4a` per chapter, plus one `.m4b` audiobook with chapter markers and the book's own cover.
 
 ## Install

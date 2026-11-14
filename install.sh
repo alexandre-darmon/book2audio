@@ -98,13 +98,29 @@ if [ "$(uname -s)" = "Darwin" ] && [ -z "${BOOK2AUDIO_NO_APP:-}" ]; then
 fi
 
 echo
-echo "Done. A page opens in your browser. The voice model downloads the first time you use it."
-echo "Next time, open a new Terminal window and type:  book2audio"
-[ -z "$APP_NOTE" ] || echo "$APP_NOTE"
+echo "Done. The voice model downloads the first time you use it."
 
-# Start it right away: the command is not on the PATH of this window yet, so use its full path.
 BIN="$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
-if [ -z "${BOOK2AUDIO_NO_START:-}" ] && [ -x "$BIN/book2audio" ]; then
+[ -z "${BOOK2AUDIO_NO_START:-}" ] || exit 0
+
+# Start it without a Terminal window: the app in Applications runs in the background and opens the page.
+APP="$HOME/Applications/book2audio.app"
+if [ -d "$APP" ] && command -v open >/dev/null 2>&1 && open "$APP" 2>/dev/null; then
+  n=0
+  while [ "$n" -lt 30 ]; do
+    if curl -sf -o /dev/null http://127.0.0.1:8765/status 2>/dev/null; then
+      echo "book2audio is open in your browser. You can close this window."
+      echo "Next time, double-click book2audio in the Applications folder inside your home folder."
+      exit 0
+    fi
+    n=$((n + 1)); sleep 1
+  done
+  echo "The app did not answer. Starting book2audio in this window instead."
+fi
+
+# No app (BOOK2AUDIO_NO_APP, or not a Mac), or it did not start: run it here, with its full path.
+echo "Next time, open a new Terminal window and type:  book2audio"
+if [ -x "$BIN/book2audio" ]; then
   echo
   exec "$BIN/book2audio"
 fi
