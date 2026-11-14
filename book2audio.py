@@ -1879,6 +1879,13 @@ PAGE = r"""<!doctype html>
   .with-cover { display:flex; gap:14px; align-items:center; min-width:0; } .with-cover > div { min-width:0; }
   #summary { margin-top:16px; padding:12px 14px; border-radius:8px; background:var(--raise); font-size:13px; }
   #summary b { font-weight:600; }
+  #plan { display:flex; gap:10px 34px; align-items:end; flex-wrap:wrap; margin-top:18px; padding:12px 16px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+  #plan div { display:grid; gap:2px; min-width:0; } #plan span { font-size:12px; color:var(--soft); } #plan b { font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+  #plan a { margin-left:auto; font-size:13px; }
+  #opts { margin-top:4px; padding:2px 16px 16px; border:1px solid var(--line); border-top:0; border-radius:0 0 8px 8px; background:var(--panel); }
+  #opts.hide { display:none; } #plan.open { border-radius:8px 8px 0 0; }
+  .optrow { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+  .actions #add { margin-left:auto; }
   .pick { display:flex; gap:14px; align-items:center; margin-top:18px; font-size:13px; flex-wrap:wrap; }
   .pick h3 { margin-right:auto; }
   #chapters { max-height:308px; overflow:auto; margin-top:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
@@ -1962,13 +1969,15 @@ PAGE = r"""<!doctype html>
   <div id="drop" tabindex="0" role="button"><strong>Drop an ebook here, or click to choose one</strong><span>EPUB, AZW3 or MOBI, without DRM.</span></div>
   <input id="file" type="file" accept=".epub,.azw3,.azw,.mobi" class="hide">
   <p id="err" role="alert"></p>
-  <ol id="steps"><li><b>Drop a book</b>It stays on this Mac.</li><li><b>Hear the voice</b>One minute, before you commit.</li><li><b>Queue it and leave</b>It reads chapter by chapter and can be paused at any time.</li></ol>
+  <ol id="steps"><li><b>Drop a book</b>Its language is detected and a voice is chosen for your Mac.</li><li><b>Keep the whole book, or pick chapters</b>One click starts the reading.</li><li><b>Listen</b>The audiobook is ready when the reading ends. It can be paused at any time.</li></ol>
 
   <section id="book" class="panel hide">
     <div class="book-head">
       <div class="with-cover"><img id="bookcover" class="cover hide" alt=""><span id="bookph" class="cover ph" aria-hidden="true"><svg viewBox="0 0 64 64" width="30" height="30"><path d="M13 30 V34 M22 26 V38 M42 26 V38 M51 30 V34" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="28" y="20" width="8" height="24" fill="#8C52EE"/></svg></span><div><h2 id="title"></h2><div id="meta"></div></div></div>
       <button id="closebook" class="quiet" aria-label="Close this book">Close</button>
     </div>
+    <div id="plan"><div><span>Language</span><b id="planlang"></b></div><div><span>Voice</span><b id="planvoice"></b></div><div><span>Model</span><b id="planmodel"></b></div><a id="change" aria-expanded="false" aria-controls="opts">Change</a></div>
+    <div id="opts" class="hide">
     <div class="settings">
       <label class="field"><span>Language<span id="langnote"></span></span><select id="lang"></select></label>
       <label class="field">Voice model<select id="model"><option value="voxtral-4bit" data-label="Natural (Voxtral 4-bit)"></option><option value="voxtral" data-label="Natural, full size (Voxtral, slower)"></option><option value="kyutai" data-label="Kyutai TTS (experimental)"></option><option value="pocket" data-label="Light, on the CPU (Pocket TTS)"></option><option value="kokoro" data-label="Fast (Kokoro)"></option><option value="clone" data-label="Your own voice (experimental)"></option></select></label>
@@ -1985,17 +1994,17 @@ PAGE = r"""<!doctype html>
       <label class="check"><input type="checkbox" id="cok"> This is my own voice, or the person has agreed to this use</label>
       <div class="crow"><button type="button" class="main" id="csave" disabled>Save this voice</button><span id="cnote">The recording stays on this Mac.</span></div>
     </div>
-    <div id="summary"></div>
-    <div class="pick"><h3>Chapters</h3><a id="all">All chapters</a><a id="todo">Only those not done</a><a id="none">None</a></div>
-    <div id="chapters"></div>
     <div class="icloud"><label class="check"><input type="checkbox" id="iphone" checked> Copy the finished audiobook to iCloud Drive</label>
       <span class="info"><button type="button" class="i" aria-label="What does this do?" aria-describedby="tip">i</button>
         <span id="tip" role="tooltip">When the book is finished, its audiobook file (.m4b) is copied to iCloud Drive, in a folder named Audiobooks. From there it appears on your iPhone and your other Apple devices: open the Files app, then iCloud Drive, then Audiobooks. The original stays on this Mac.</span></span></div>
+      <div class="optrow"><button id="compare">Compare models</button><button id="folder" class="quiet">Open folder</button></div>
+    </div>
+    <div id="summary"></div>
+    <div class="pick"><h3>Chapters</h3><a id="all">All chapters</a><a id="todo">Only those not done</a><a id="none">None</a></div>
+    <div id="chapters"></div>
     <div class="actions">
-      <button id="preview">Play a 1-minute preview</button>
-      <button id="compare">Compare models</button>
-      <button id="folder" class="quiet">Open folder</button>
-      <button id="add" class="main">Add to the queue</button>
+      <button id="preview" class="quiet">Hear one minute first</button>
+      <button id="add" class="main">Create the audiobook</button>
     </div>
     <audio id="player" controls class="hide"></audio>
     <div id="cmp" class="hide"><h3 style="margin-top:20px">Same passage, each model, timed on this Mac</h3><div id="cmprows"></div></div>
@@ -2027,8 +2036,11 @@ const WORDS = { ...MODELS_FR,
   "Start reading":"Lancer la lecture", "Resume reading":"Reprendre la lecture",
   "Drop an ebook here, or click to choose one":"Déposez un livre numérique ici, ou cliquez pour en choisir un", "Add another ebook":"Ajouter un autre livre",
   "EPUB, AZW3 or MOBI, without DRM.":"EPUB, AZW3 ou MOBI, sans DRM.",
-  "Drop a book":"Déposez un livre", "It stays on this Mac.":"Il reste sur ce Mac.", "Hear the voice":"Écoutez la voix", "One minute, before you commit.":"Une minute, avant de vous lancer.",
-  "Queue it and leave":"Mettez-le en file et partez", "It reads chapter by chapter and can be paused at any time.":"La lecture se fait chapitre par chapitre et peut être mise en pause à tout moment.",
+  "Drop a book":"Déposez un livre", "Its language is detected and a voice is chosen for your Mac.":"Sa langue est détectée et une voix est choisie pour votre Mac.",
+  "Keep the whole book, or pick chapters":"Gardez tout le livre, ou choisissez des chapitres", "One click starts the reading.":"Un clic lance la lecture.",
+  "Listen":"Écoutez", "The audiobook is ready when the reading ends. It can be paused at any time.":"Le livre audio est prêt à la fin de la lecture. Elle peut être mise en pause à tout moment.",
+  "Model":"Modèle", "Change":"Modifier", "Hide options":"Masquer les options", "To record":"À enregistrer",
+  "Hear one minute first":"Écouter une minute d'abord", "Create the audiobook":"Créer le livre audio",
   "Close":"Fermer", "Close this book":"Fermer ce livre", "Language":"Langue", "Voice model":"Modèle de voix", "Voice":"Voix",
   "Chapters of this book":"Chapitres de ce livre", "Current chapter":"Chapitre en cours",
   "Add a voice":"Ajouter une voix",
@@ -2101,6 +2113,7 @@ const RULES = [
   [/^Voice saved: (.+)\. Press play to hear it read\.$/, (m, v) => `Voix enregistrée : ${v}. Appuyez sur lecture pour l'entendre lire.`],
   [/^The sample of (.+) is ready: press play\.$/, (m, v) => `L'échantillon de ${v} est prêt : appuyez sur lecture.`],
   [/^Added to the queue: (.+)$/s, (m, v) => `Ajouté à la file : ${v}`],
+  [/^Reading started: (.+)$/s, (m, v) => `Lecture lancée : ${v}`],
   [/^(\d+) s, that is enough$/, (m, n) => `${n} s, c'est suffisant`],
   [/^([\d.]+)x real time: (\d+) s of audio in (\d+) s$/, (m, x, a, c) => `${num(x)}x le temps réel : ${a} s d'audio en ${c} s`],
   [/^on (.+), (\d+) GB$/, (m, chip, gb) => `sur ${chip}, ${gb} Go`],
@@ -2187,6 +2200,7 @@ function paintVoices() {                              // only classes and labels
     : "Press play to hear a voice. Its sample is created the first time, then kept on this Mac.";
   $("vall").classList.toggle("hide", working || missing.length < 2);
   $("vall").textContent = `Create ${missing.length === list.length ? "all" : "the missing"} ${missing.length} samples` + (speed ? `, about ${Math.max(1, Math.round(secs / 60))} min` : "");
+  showPlan(); if (cloning() && !list.length) showOptions(true);
 }
 function startSample(v) { playing = v.stem; vplayer.src = "/voice?s=" + encodeURIComponent(v.stem); return vplayer.play(); }
 vplayer.addEventListener("error", () => { playing = ""; poll(); toast("This sample could not be fetched. Press play again to create it on this Mac."); });
@@ -2223,6 +2237,17 @@ $("csave").onclick = () => { if (!take) return; $("csave").disabled = true; $("e
     .then(r => { myVoices = r.my_voices; take = null; $("cplay").classList.add("hide"); $("cplay").removeAttribute("src"); $("cname").value = ""; $("ctime").textContent = ""; $("cok").checked = false; $("crec").textContent = "Record";
       fillVoices(); $("voice").value = r.voice.id; paintVoices(); toast(`Voice saved: ${r.voice.name}. Press play to hear it read.`); })
     .catch(fail).finally(canSave); };
+function showPlan() {                                   // what will be used, in three words
+  if (!book) return;
+  const opt = $("model").selectedOptions[0], v = voiceList().find(x => x.id === $("voice").value);
+  $("planlang").textContent = book.catalog.languages[$("lang").value] || $("lang").value;
+  $("planvoice").textContent = v ? v.name : cloning() ? "To record" : "";
+  $("planmodel").textContent = opt ? opt.textContent : "";
+  $("add").textContent = working ? "Add to the queue" : "Create the audiobook";
+}
+function showOptions(open) { $("opts").classList.toggle("hide", !open); $("plan").classList.toggle("open", open);
+  $("change").textContent = open ? "Hide options" : "Change"; $("change").setAttribute("aria-expanded", open); }
+$("change").onclick = () => showOptions($("opts").classList.contains("hide"));
 function showVoices(s) {
   if (JSON.stringify(s.my_voices || []) !== JSON.stringify(myVoices)) { myVoices = s.my_voices || []; if (book && cloning()) fillVoices(); }
   samples = new Set(s.samples || []); sampleErrors = s.sample_errors || {}; sampling = s.sampling || ""; working = s.running;
@@ -2264,7 +2289,7 @@ function showBook(b) {
     if (c.done || c.skip) { const k = document.createElement("span"); k.className = "tagk"; k.textContent = c.done ? "done" : "front matter"; row.querySelector(".t").append(k); }
     $("chapters").append(row);
   });
-  $("book").classList.remove("hide"); $("player").classList.add("hide"); $("cmp").classList.add("hide");
+  $("book").classList.remove("hide"); $("player").classList.add("hide"); $("cmp").classList.add("hide"); showOptions(false);
   layout(); countSelected(); $("book").scrollIntoView({ behavior:"smooth", block:"start" });
 }
 function closeBook() { vplayer.pause(); book = null; $("book").classList.add("hide"); layout(); }
@@ -2387,7 +2412,9 @@ $("closebook").onclick = closeBook;
 $("vall").onclick = () => makeSamples(voiceList().filter(v => !samples.has(v.stem)).map(v => v.id));
 $("preview").onclick = () => { const d = settings(); if (d) post("/preview", d).then(poll).catch(fail); };
 $("compare").onclick = () => { const d = settings(); if (d) post("/compare", d).then(poll).catch(fail); };
-$("add").onclick = () => { const d = settings(); if (d) post("/queue/add", d).then(() => { toast(`Added to the queue: ${book.title}`); closeBook(); poll(); window.scrollTo({ top:0, behavior:"smooth" }); }).catch(fail); };
+$("add").onclick = () => { const d = settings(); if (!d) return; const title = book.title, start = !working;   // one click: queued, and started if nothing else is being read
+  post("/queue/add", d).then(() => start ? post("/queue/start") : null)
+    .then(() => { toast(start ? `Reading started: ${title}` : `Added to the queue: ${title}`); closeBook(); poll(); window.scrollTo({ top:0, behavior:"smooth" }); }).catch(fail); };
 $("qstart").onclick = () => post("/queue/start").then(poll).catch(fail);
 $("stop").onclick = () => { $("stop").disabled = true; post("/stop").then(() => toast("Pausing after this passage. The position is saved.")).catch(fail).finally(() => { setTimeout(() => { $("stop").disabled = false; }, 3000); poll(); }); };
 $("folder").onclick = () => post("/folder").catch(fail);

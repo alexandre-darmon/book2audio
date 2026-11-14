@@ -11,6 +11,10 @@
 
 book2audio checks your Mac and picks the voice model that fits it. A bigger Mac gets a more natural voice, a smaller one takes a lighter model. No account, no API key, nothing uploaded. Listen on your iPhone.
 
+1. Drop your book. Its language is detected and the best voice for your Mac is chosen.
+2. Keep the whole book, or pick chapters.
+3. Click "Create the audiobook" and wait for the reading to end.
+
 > [!IMPORTANT]
 > **This tool is intended for use with non-DRM, legally acquired eBooks only.**
 > The authors are not responsible for any misuse of this software or any resulting legal consequences.

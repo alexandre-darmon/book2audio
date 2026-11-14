@@ -19,8 +19,13 @@ if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
-echo "Installing book2audio..."
-uv tool install --reinstall --python 3.12 "$SOURCE"
+# One line instead of the list of every library: the voice engines bring about a hundred of them.
+echo "Installing book2audio and its voice engines. The first time takes a few minutes."
+uv tool install -q --reinstall --python 3.12 "$SOURCE" &
+PID=$!
+while kill -0 "$PID" 2>/dev/null; do printf "."; sleep 3; done
+echo
+wait "$PID" || { echo "The installation did not finish. The reason is just above."; exit 1; }
 uv tool update-shell >/dev/null 2>&1 || true
 
 # A small app in ~/Applications, so book2audio can be started with a double-click.
