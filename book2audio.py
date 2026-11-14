@@ -1324,7 +1324,7 @@ def main(argv: list[str] | None = None) -> int:
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>book2audio</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='.5' y='.5' width='63' height='63' rx='13' fill='%23111113' stroke='%2326262B'/%3E%3Cpath d='M13 30V34M22 26V38M42 26V38M51 30V34' fill='none' stroke='%23F7F7F7' stroke-width='6' stroke-linecap='square'/%3E%3Crect x='28' y='20' width='8' height='24' fill='%238C52EE'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cstyle%3E.t%7Bfill:%23111113;stroke:%2326262B%7D.g%7Bstroke:%23F7F7F7%7D@media (prefers-color-scheme:light)%7B.t%7Bfill:%23F7F7F7;stroke:%23E3E3E3%7D.g%7Bstroke:%230A0A0A%7D%7D%3C/style%3E%3Crect class='t' x='.5' y='.5' width='63' height='63' rx='13'/%3E%3Cpath class='g' d='M13 30V34M22 26V38M42 26V38M51 30V34' fill='none' stroke-width='6' stroke-linecap='square'/%3E%3Crect x='28' y='20' width='8' height='24' fill='%238C52EE'/%3E%3C/svg%3E">
 <style>
   :root { color-scheme: dark;       /* dark or light follows the Mac's own setting */
     --bg:#0a0a0c; --panel:#111113; --raise:#17171a; --line:#232327; --ink:#ededef; --soft:#8b8b93; --faint:#5c5c66;
@@ -1428,6 +1428,7 @@ PAGE = r"""<!doctype html>
   #meta { color:var(--soft); font-size:13px; margin-top:2px; }
   .settings { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, .9fr); gap:12px; margin-top:18px; align-items:end; }
   .cover { width:52px; height:74px; object-fit:cover; border-radius:4px; border:1px solid var(--line); flex:none; background:var(--raise); }
+  .cover.ph { display:grid; place-items:center; background:var(--tile); border-color:var(--tile-line); }   /* no cover in the book: the mark, in the Mac's light or dark */
   .with-cover { display:flex; gap:14px; align-items:center; min-width:0; } .with-cover > div { min-width:0; }
   #summary { margin-top:16px; padding:12px 14px; border-radius:8px; background:var(--raise); font-size:13px; }
   #summary b { font-weight:600; }
@@ -1486,7 +1487,7 @@ PAGE = r"""<!doctype html>
 <main>
   <section id="now" class="panel hide" aria-live="polite">
     <div class="now-top">
-      <div class="with-cover"><img id="nowcover" class="cover hide" alt=""><div><div id="nowkind"></div><h2 id="nowtitle"></h2></div></div>
+      <div class="with-cover"><img id="nowcover" class="cover hide" alt=""><span id="nowph" class="cover ph" aria-hidden="true"><svg viewBox="0 0 64 64" width="30" height="30"><path d="M13 30 V34 M22 26 V38 M42 26 V38 M51 30 V34" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="28" y="20" width="8" height="24" fill="#8C52EE"/></svg></span><div><div id="nowkind"></div><h2 id="nowtitle"></h2></div></div>
       <div id="pct"></div>
     </div>
     <div id="left"></div>
@@ -1518,7 +1519,7 @@ PAGE = r"""<!doctype html>
 
   <section id="book" class="panel hide">
     <div class="book-head">
-      <div class="with-cover"><img id="bookcover" class="cover hide" alt=""><div><h2 id="title"></h2><div id="meta"></div></div></div>
+      <div class="with-cover"><img id="bookcover" class="cover hide" alt=""><span id="bookph" class="cover ph" aria-hidden="true"><svg viewBox="0 0 64 64" width="30" height="30"><path d="M13 30 V34 M22 26 V38 M42 26 V38 M51 30 V34" fill="none" stroke="var(--glyph)" stroke-width="6" stroke-linecap="square"/><rect x="28" y="20" width="8" height="24" fill="#8C52EE"/></svg></span><div><h2 id="title"></h2><div id="meta"></div></div></div>
       <button id="closebook" class="quiet" aria-label="Close this book">Close</button>
     </div>
     <div class="settings">
@@ -1593,7 +1594,7 @@ function showBook(b) {
   Object.entries(b.catalog.languages).forEach(([code, name]) => { const o = document.createElement("option"); o.value = code; o.textContent = name; $("lang").append(o); });
   $("langnote").textContent = b.catalog.languages[short] ? `, ${b.catalog.languages[short]} according to the book` : "";
   $("lang").value = b.catalog.languages[short] ? short : "en"; fillModels();
-  $("bookcover").classList.toggle("hide", !b.cover); if (b.cover) $("bookcover").src = "/cover?t=" + Date.now();
+  $("bookcover").classList.toggle("hide", !b.cover); $("bookph").classList.toggle("hide", !!b.cover); if (b.cover) $("bookcover").src = "/cover?t=" + Date.now();
   $("chapters").innerHTML = "";
   b.chapters.forEach(c => {
     const row = document.createElement("label"); row.className = "ch" + (c.done ? " done" : c.skip ? " skip" : "");
@@ -1651,7 +1652,7 @@ function showNow(s) {
   $("nowkind").textContent = s.running ? (s.kind || "Working") : "Stopped on an error";
   $("nowtitle").textContent = s.title || "";
   const cover = s.book_id && (s.queue.find(q => q.id === s.book_id) || {}).cover ? "/cover?id=" + s.book_id : "";
-  $("nowcover").classList.toggle("hide", !cover); if (cover && !$("nowcover").src.endsWith(cover)) $("nowcover").src = cover;
+  $("nowcover").classList.toggle("hide", !cover); $("nowph").classList.toggle("hide", !!cover); if (cover && !$("nowcover").src.endsWith(cover)) $("nowcover").src = cover;
   $("pct").innerHTML = reading ? `${s.percent}<small>%</small>` : "";
   $("left").textContent = reading ? s.left.replace(/^about/, "About") : s.running ? "Getting the voice model ready..." : "";
   document.title = reading ? `${s.percent}% ${s.title || "book2audio"}` : "book2audio";
