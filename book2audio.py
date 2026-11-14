@@ -61,6 +61,7 @@ MODEL_ALIASES = {
     "kokoro": DEFAULT_MODEL,                                   # small and fast, best in English
     "voxtral": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",   # 8 GB, natural in French, non-commercial licence
     "voxtral-4bit": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",   # 2.5 GB, same voices, about 2.5x faster: default for French
+    "clone": "mlx-community/chatterbox-fp16",                  # reads with a voice recorded by the user (Chatterbox, MIT)
 }
 VOXTRAL = {"fr": "fr_female", "en": "casual_female", "es": "es_female", "de": "de_female",
            "it": "it_female", "pt": "pt_female", "nl": "nl_female", "ar": "ar_male", "hi": "hi_female"}
@@ -650,10 +651,17 @@ class Synth:
         self.model_id = MODEL_ALIASES.get(model_id.lower(), model_id)
         self.speed, self.lang_code = speed, lang_code
         self.kwargs: dict = {}
+        self.reference: Path | None = None           # a recording of the voice to imitate (Chatterbox)
+        self._conds = None
         if "kokoro" in self.model_id.lower() and language.split("-")[0] not in KOKORO:
             REPORT.log(f"Warning: Kokoro has no '{language}' voice, reading with an English voice.")
         self.set_voice(voice, language)
-        REPORT.log(f"Loading {self.model_id} ({', '.join(f'{k}={v}' for k, v in self.kwargs.items())})")
+        try:
+            from importlib.metadata import version
+            library = f", mlx-audio {version('mlx-audio')}"
+        except Exception:
+            library = ""
+        REPORT.log(f"Loading {self.model_id} ({', '.join(f'{k}={v}' for k, v in self.kwargs.items())}{library})")
         self.model = load_local_first(self.model_id, load_model)
         self.sample_rate = int(getattr(self.model, "sample_rate", 0) or 24000)
 
@@ -671,19 +679,38 @@ class Synth:
             self.kwargs = {"voice": voice or VOXTRAL.get(short, "casual_female")}
             if self.lang_code:
                 self.kwargs["lang_code"] = self.lang_code
+        elif "chatterbox" in name:
+            # Chatterbox has no voice of its own: it imitates the one in a short recording.
+            path = my_voice_path(voice or "")
+            if not path:
+                raise RuntimeError("This model reads with a voice you give it: record or choose one first.")
+            if path != self.reference:
+                self.reference, self._conds = path, None
+            self.kwargs = {"lang_code": self.lang_code or short, "verbose": False}
+            self.key = f"{self.model_id}|{short}|{path.stem}|{path.stat().st_size}"
+            return
         else:
             self.kwargs = {"lang_code": self.lang_code or LANG_NAMES.get(short, "English")}
             if voice:
                 self.kwargs["voice"] = voice
             if self.speed != 1.0:
                 self.kwargs["speed"] = self.speed
+        self.reference, self._conds = None, None
         self.key = f"{self.model_id}|{sorted(self.kwargs.items())}"
 
     def say(self, text: str):
         import numpy as np
 
         parts = []
-        for result in self.model.generate(text=text, **self.kwargs):
+        extra = {}
+        if self.reference is not None:
+            if hasattr(self.model, "prepare_conditionals"):
+                if self._conds is None:              # the recording is analysed once, not for every passage
+                    self._conds = self.model.prepare_conditionals(str(self.reference), 24000)
+                extra = {"conds": self._conds}
+            else:                                    # another version of the library: hand it the recording each time
+                extra = {"ref_audio": str(self.reference)}
+        for result in self.model.generate(text=text, **self.kwargs, **extra):
             parts.append(np.array(result.audio, dtype=np.float32).reshape(-1))
             self.sample_rate = int(getattr(result, "sample_rate", 0) or self.sample_rate)
         return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
@@ -1188,6 +1215,64 @@ SAMPLE_TEXT = {
 VOICE_DIR = Path.home() / "Audiobooks" / ".voices"       # samples are made once on this Mac, then kept
 
 
+MY_VOICES = VOICE_DIR / "mine"                           # recordings given by the user, never sent anywhere
+
+
+def my_voices() -> list[dict]:
+    rows = []
+    for path in sorted(MY_VOICES.glob("*.wav")) if MY_VOICES.is_dir() else []:
+        try:
+            name = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["name"]
+        except Exception:
+            name = path.stem
+        rows.append({"id": path.stem, "name": name})
+    return rows
+
+
+def my_voice_path(voice_id: str) -> Path | None:
+    path = MY_VOICES / f"{voice_id}.wav"
+    return path if re.fullmatch(r"[a-z0-9-]+", voice_id or "") and path.is_file() else None
+
+
+def save_my_voice(name: str, data: bytes, ext: str) -> dict:
+    """Keep a recording as a voice: mono, 24 kHz, 30 seconds at most. The model listens to the first 10."""
+    import unicodedata
+    name = " ".join(name.split())[:40] or "My voice"
+    base = re.sub(r"[^a-z0-9]+", "-", unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()).strip("-") or "voice"
+    slug, n = base, 2
+    while (MY_VOICES / f"{slug}.wav").exists():
+        slug, n = f"{base}-{n}", n + 1
+    MY_VOICES.mkdir(parents=True, exist_ok=True)
+    source = MY_VOICES / f".tmp-{slug}.{re.sub(r'[^a-z0-9]', '', ext.lower()) or 'bin'}"
+    target = MY_VOICES / f"{slug}.wav"
+    source.write_bytes(data)
+    try:
+        done = subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(source), "-vn", "-ac", "1", "-ar", "24000",
+                               "-t", "30", str(target)], capture_output=True, text=True)
+        if done.returncode != 0 or not target.exists():
+            raise ValueError("This file is not a recording that can be read.")
+        seconds = audio_seconds(target)
+        if seconds < 5:
+            raise ValueError(f"This recording lasts {seconds:.0f} seconds. 10 to 20 seconds of speech work best.")
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        source.unlink(missing_ok=True)
+    target.with_suffix(".json").write_text(json.dumps({"name": name, "seconds": round(seconds, 1)}, ensure_ascii=False), encoding="utf-8")
+    return {"id": slug, "name": name}
+
+
+def delete_my_voice(voice_id: str) -> None:
+    path = my_voice_path(voice_id)
+    if not path:
+        return
+    path.unlink(missing_ok=True)
+    path.with_suffix(".json").unlink(missing_ok=True)
+    for sample in VOICE_DIR.glob(f"clone--*--{voice_id}.*"):
+        sample.unlink(missing_ok=True)
+
+
 def voice_stem(model: str, language: str, voice: str) -> str:
     """The file name of a voice sample, without its extension."""
     name = re.sub(r"[^A-Za-z0-9]+", "-", voice.rsplit("/", 1)[-1].removesuffix(".wav")).strip("-")
@@ -1264,6 +1349,7 @@ def run_voice_samples(model: str, language: str, voices: list[str], args) -> Non
     fmt = "wav" if pick_format("m4a") == "wav" else "m4a"
     VOICE_DIR.mkdir(parents=True, exist_ok=True)
     names = {v: name for v, name, _ in VOICE_CATALOG.get(model, {}).get(short, [])}
+    names.update({v["id"]: v["name"] for v in my_voices()} if model == "clone" else {})
     label = MODEL_LABELS.get(model, model)
     for k, voice in enumerate(voices):
         stem = voice_stem(model, short, voice)
@@ -1296,6 +1382,8 @@ MODELS = {
     "kyutai": {"label": "Kyutai TTS", "need": 5.0, "gpu": True, "langs": "fr en"},
     "pocket": {"label": "Pocket TTS", "need": 1.5, "gpu": False, "langs": "fr en de es it pt"},
     "kokoro": {"label": "Kokoro", "need": 1.5, "gpu": True, "langs": "en fr es it pt hi ja zh"},
+    # Never picked automatically: it needs a recording first. Its memory figure is an estimate.
+    "clone": {"label": "Your own voice", "need": 4.0, "gpu": True, "langs": "fr en es de it pt nl hi ar ja zh"},
 }
 MODEL_LABELS = {k: v["label"] for k, v in MODELS.items()}
 # Voxtral 4-bit comes first wherever it speaks the language: it is the model confirmed on a real Mac.
@@ -1348,6 +1436,7 @@ def recommend(language: str, machine: dict | None = None) -> dict:
         rows.append({"model": model, "label": spec["label"], "fit": fit, "speaks": short in spec["langs"].split(),
                      "where": "GPU" if spec["gpu"] else "CPU", "need_gb": spec["need"], "speed": speeds.get(model)})
     order = PREFERENCE.get(short) or [m for m, v in MODELS.items() if short in v["langs"].split()] or PREFERENCE["en"]
+    order = [m for m in order if m != "clone"]
     usable = {r["model"]: r for r in rows if r["speaks"]}
     best = next((m for m in order if m in usable and usable[m]["fit"] == "fits"), None) \
         or next((m for m in order if m in usable and usable[m]["fit"] == "tight"), None) or "pocket"
@@ -1774,6 +1863,17 @@ PAGE = r"""<!doctype html>
   .v .vd { font-size:11px; color:var(--soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .v .vd:empty { display:none; }
   .v.bad .vd { color:var(--danger); }
   @keyframes turn { to { transform:rotate(360deg); } }
+  .v .del { margin-left:auto; height:22px; padding:0 6px; font-size:11px; color:var(--soft); background:transparent; border-color:transparent; }
+  .v .del:hover:not(:disabled) { color:var(--danger); border-color:var(--line); }
+  #clonebox { margin-top:12px; padding:14px 16px; border:1px solid var(--line); border-radius:8px; background:var(--bg); display:grid; gap:10px; }
+  #clonebox.hide { display:none; }
+  #clonebox h3 { margin:0; font-size:13px; font-weight:600; } #clonebox p { margin:0; font-size:13px; color:var(--soft); max-width:68ch; }
+  #clonebox blockquote { margin:0; padding:10px 14px; border-left:2px solid var(--accent); background:var(--panel); font-size:15px; line-height:1.55; max-width:68ch; }
+  .crow { display:flex; align-items:center; gap:12px; flex-wrap:wrap; font-size:13px; color:var(--soft); }
+  #crec.on { background:var(--danger); border-color:var(--danger); color:#fff; }
+  #cname { font:inherit; font-size:13px; height:32px; padding:0 10px; border:1px solid var(--line); border-radius:6px; background:var(--raise); color:var(--ink); width:min(100%, 260px); }
+  #cname:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  #cplay { height:32px; max-width:100%; } #cplay.hide { display:none; }
   .cover { width:52px; height:74px; object-fit:cover; border-radius:4px; border:1px solid var(--line); flex:none; background:var(--raise); }
   .cover.ph { display:grid; place-items:center; background:var(--tile); border-color:var(--tile-line); }   /* no cover in the book: the mark, in the Mac's light or dark */
   .with-cover { display:flex; gap:14px; align-items:center; min-width:0; } .with-cover > div { min-width:0; }
@@ -1871,10 +1971,20 @@ PAGE = r"""<!doctype html>
     </div>
     <div class="settings">
       <label class="field"><span>Language<span id="langnote"></span></span><select id="lang"></select></label>
-      <label class="field">Voice model<select id="model"><option value="voxtral-4bit" data-label="Natural (Voxtral 4-bit)"></option><option value="voxtral" data-label="Natural, full size (Voxtral, slower)"></option><option value="kyutai" data-label="Kyutai TTS (experimental)"></option><option value="pocket" data-label="Light, on the CPU (Pocket TTS)"></option><option value="kokoro" data-label="Fast (Kokoro)"></option></select></label>
+      <label class="field">Voice model<select id="model"><option value="voxtral-4bit" data-label="Natural (Voxtral 4-bit)"></option><option value="voxtral" data-label="Natural, full size (Voxtral, slower)"></option><option value="kyutai" data-label="Kyutai TTS (experimental)"></option><option value="pocket" data-label="Light, on the CPU (Pocket TTS)"></option><option value="kokoro" data-label="Fast (Kokoro)"></option><option value="clone" data-label="Your own voice (experimental)"></option></select></label>
     </div>
     <div class="vhead"><span id="vlabel">Voice</span><span id="vnote"></span><a id="vall" class="hide"></a></div>
     <div id="voices" role="radiogroup" aria-labelledby="vlabel"></div><input type="hidden" id="voice">
+    <div id="clonebox" class="hide">
+      <h3>Add a voice</h3>
+      <p>Read this aloud in a quiet room, at your normal pace. About 15 seconds are enough. A recording you already have works too.</p>
+      <blockquote id="cscript"></blockquote>
+      <div class="crow"><button type="button" id="crec">Record</button><span id="ctime"></span><a id="cfile">Choose a recording</a><input type="file" id="cpick" accept="audio/*,.m4a,.wav,.mp3,.aac" hidden></div>
+      <audio id="cplay" controls class="hide"></audio>
+      <div class="crow"><input type="text" id="cname" placeholder="Name of this voice" maxlength="40" aria-label="Name of this voice"></div>
+      <label class="check"><input type="checkbox" id="cok"> This is my own voice, or the person has agreed to this use</label>
+      <div class="crow"><button type="button" class="main" id="csave" disabled>Save this voice</button><span id="cnote">The recording stays on this Mac.</span></div>
+    </div>
     <div id="summary"></div>
     <div class="pick"><h3>Chapters</h3><a id="all">All chapters</a><a id="todo">Only those not done</a><a id="none">None</a></div>
     <div id="chapters"></div>
@@ -1908,11 +2018,17 @@ const ICON = { play:'<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden
                wait:'<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M6 1.2a4.8 4.8 0 1 1-4.8 4.8" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>' };
 const vplayer = new Audio();
 let samples = new Set(), sampleErrors = {}, sampling = "", wantPlay = "", playing = "", working = false;
-const voiceList = () => ((book && book.catalog.voices[$("model").value]) || {})[$("lang").value] || [];
+let myVoices = [];
+const READ_ALOUD = { fr:"Il y a des livres que l'on garde longtemps près de soi. On les ouvre le soir, quand la maison est calme, et l'on retrouve aussitôt les mêmes voix, les mêmes lieux, comme si rien n'avait changé depuis la dernière page. Voilà pourquoi j'aime tant qu'on me lise une histoire.",
+  en:"Some books stay close to us for a long time. We open them in the evening, when the house is quiet, and we find the same voices and the same places at once, as if nothing had changed since the last page. That is why I love being read a story." };
+const cloning = () => $("model").value === "clone";
+const voiceList = () => cloning() ? myVoices.map(v => ({ id:v.id, name:v.name, note:"Your recording", stem:`clone--${$("lang").value}--${v.id}`, mine:true }))
+  : ((book && book.catalog.voices[$("model").value]) || {})[$("lang").value] || [];
 function fillVoices() {                               // one row per voice: click to choose it, play to hear it
   const list = voiceList(), keep = $("voice").value;
   $("voice").value = list.some(v => v.id === keep) ? keep : (list[0] || {}).id || "";
   vplayer.pause(); $("voices").innerHTML = "";
+  $("clonebox").classList.toggle("hide", !cloning()); $("cscript").textContent = READ_ALOUD[$("lang").value] || READ_ALOUD.en;
   list.forEach(v => {
     const row = document.createElement("div"); row.className = "v"; row.tabIndex = 0; row.setAttribute("role", "radio"); row.dataset.id = v.id;
     row.innerHTML = '<button type="button" class="play"></button><span class="who"><span class="vn"></span><span class="vd"></span></span>';
@@ -1920,6 +2036,11 @@ function fillVoices() {                               // one row per voice: clic
     row.onclick = () => { $("voice").value = v.id; paintVoices(); };
     row.onkeydown = e => { if (e.target === row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); row.click(); } };
     row.querySelector(".play").onclick = e => { e.stopPropagation(); playVoice(v); };
+    if (v.mine) { const del = document.createElement("button"); del.type = "button"; del.className = "del"; del.textContent = "Delete";
+      del.onclick = e => { e.stopPropagation();
+        if (del.dataset.sure) api("/myvoice/delete", { method:"POST", body:JSON.stringify({ id:v.id }) }).then(r => { myVoices = r.my_voices; fillVoices(); toast(`Deleted: ${v.name}`); }).catch(fail);
+        else { del.dataset.sure = 1; del.textContent = "Delete for good?"; setTimeout(() => { delete del.dataset.sure; del.textContent = "Delete"; }, 4000); } };
+      row.append(del); }
     $("voices").append(row);
   });
   paintVoices();
@@ -1936,7 +2057,7 @@ function paintVoices() {                              // only classes and labels
     b.disabled = !ready && working;
     b.setAttribute("aria-label", busy ? `Creating the sample of ${v.name}` : on ? `Stop ${v.name}` : ready ? `Play ${v.name}` : `Create and play the sample of ${v.name}`); });
   const speed = speeds[$("model").value], secs = missing.length * 12 / (speed || 1) + 40;
-  $("vnote").textContent = !list.length ? "" : working && sampling ? "Creating samples..." : !missing.length ? "Press play to hear a voice."
+  $("vnote").textContent = !list.length ? (cloning() ? "No voice yet: add one below." : "") : working && sampling ? "Creating samples..." : !missing.length ? "Press play to hear a voice."
     : samples.size && missing.length < list.length ? "Press play to hear a voice. A dashed button creates its sample first."
     : "Press play to hear a voice. Its sample is created the first time, then kept on this Mac.";
   $("vall").classList.toggle("hide", working || missing.length < 2);
@@ -1951,7 +2072,34 @@ function playVoice(v) {
 }
 function makeSamples(ids) { $("err").textContent = ""; post("/voices", { model:$("model").value, lang:$("lang").value, voices:ids }).then(poll).catch(e => { wantPlay = ""; fail(e); }); }
 ["play", "pause", "ended"].forEach(n => vplayer.addEventListener(n, paintVoices));
+// ---- a voice of your own: record it in the page, or pick a file
+let take = null, recorder = null, recTimer = null;
+const canSave = () => { $("csave").disabled = !(take && $("cok").checked); };
+function setTake(blob, ext) { take = { blob, ext }; $("cplay").src = URL.createObjectURL(blob); $("cplay").classList.remove("hide"); canSave(); }
+function stopRecording() { if (recorder && recorder.state !== "inactive") recorder.stop(); }
+$("crec").onclick = () => {
+  if (recorder && recorder.state === "recording") return stopRecording();
+  if (!navigator.mediaDevices || !window.MediaRecorder) return fail("This browser cannot record. Choose a recording instead.");
+  navigator.mediaDevices.getUserMedia({ audio:true }).then(stream => {
+    const chunks = [], started = Date.now(); recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    recorder.onstop = () => { clearInterval(recTimer); stream.getTracks().forEach(t => t.stop()); $("crec").classList.remove("on"); $("crec").textContent = "Record again";
+      const type = recorder.mimeType || "audio/webm"; setTake(new Blob(chunks, { type }), type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm"); };
+    recorder.start(); $("crec").classList.add("on"); $("crec").textContent = "Stop"; $("err").textContent = "";
+    recTimer = setInterval(() => { const sec = Math.floor((Date.now() - started) / 1000); $("ctime").textContent = `${sec} s` + (sec < 10 ? "" : ", that is enough"); if (sec >= 30) stopRecording(); }, 250);
+  }).catch(() => fail("The microphone is not available. Allow it for this page, or choose a recording instead."));
+};
+$("cfile").onclick = () => $("cpick").click();
+$("cpick").onchange = e => { const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+  setTake(f, (f.name.split(".").pop() || "wav").toLowerCase()); $("ctime").textContent = f.name; if (!$("cname").value) $("cname").value = f.name.replace(/\.[^.]+$/, "").slice(0, 40); };
+$("cok").onchange = canSave;
+$("csave").onclick = () => { if (!take) return; $("csave").disabled = true; $("err").textContent = "";
+  api("/myvoice", { method:"POST", headers:{ "X-Name":encodeURIComponent($("cname").value || "My voice"), "X-Ext":take.ext, "X-Consent":"yes" }, body:take.blob })
+    .then(r => { myVoices = r.my_voices; take = null; $("cplay").classList.add("hide"); $("cplay").removeAttribute("src"); $("cname").value = ""; $("ctime").textContent = ""; $("cok").checked = false; $("crec").textContent = "Record";
+      fillVoices(); $("voice").value = r.voice.id; paintVoices(); toast(`Voice saved: ${r.voice.name}. Press play to hear it read.`); })
+    .catch(fail).finally(canSave); };
 function showVoices(s) {
+  if (JSON.stringify(s.my_voices || []) !== JSON.stringify(myVoices)) { myVoices = s.my_voices || []; if (book && cloning()) fillVoices(); }
   samples = new Set(s.samples || []); sampleErrors = s.sample_errors || {}; sampling = s.sampling || ""; working = s.running;
   const v = wantPlay && voiceList().find(x => x.stem === wantPlay);
   if (v && samples.has(v.stem)) { wantPlay = ""; startSample(v).catch(() => toast(`The sample of ${v.name} is ready: press play.`)); }
@@ -2001,6 +2149,7 @@ function upload(file) {
 }
 function settings() {
   const chapters = countSelected(); if (!chapters.length) { fail("Tick at least one chapter."); return null; }
+  if (cloning() && !$("voice").value) { fail("Add a voice first: this model reads with a voice you give it."); return null; }
   $("err").textContent = "";
   return { chapters, lang:$("lang").value, model:$("model").value, voice:$("voice").value, iphone:$("iphone").checked };
 }
@@ -2327,7 +2476,7 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                             "segments": state.segments if state.running else [], "now": state.now,
                             "speeds": load_speeds(), "machine": {"chip": machine_info()["chip"], "memory_gb": machine_info()["memory_gb"]},
                             "samples": sorted(set(voice_samples()) | set(_published)), "sampling": state.sampling if state.running else "",
-                            "sample_errors": state.sample_errors,
+                            "sample_errors": state.sample_errors, "my_voices": my_voices(),
                             "boot": boot, "kind": state.kind, "title": state.title, "book_id": state.book_id if state.kind.startswith("Book") else "",
                             "book_done": files_done(session["out"], list(range(1, len(book.chapters) + 1))) if book else []})
             elif url.path == "/cover":                # the cover of the book being set up, or of a queued one
@@ -2397,12 +2546,29 @@ def serve_ui(args, port: int = 8765, open_browser: bool = True) -> int:
                     state.percent, state.left, state.segments, state.now, state.results = 0, "", [], 0, []
                     jobs.put({"kind": "compare", **json.loads(body)})
                     self.reply({"ok": True})
+                elif self.path == "/myvoice":
+                    if self.headers.get("X-Consent") != "yes":
+                        return self.reply({"error": "Confirm first that this is your voice, or that the person agrees."}, 400)
+                    if len(body) > 60_000_000:
+                        return self.reply({"error": "This recording is too big. 10 to 20 seconds are enough."}, 400)
+                    try:
+                        voice = save_my_voice(unquote(self.headers.get("X-Name", "")), body, self.headers.get("X-Ext", ""))
+                    except ValueError as e:
+                        return self.reply({"error": str(e)}, 400)
+                    self.reply({"ok": True, "voice": voice, "my_voices": my_voices()})
+                elif self.path == "/myvoice/delete":
+                    if state.running:
+                        return self.reply({"error": "Wait until nothing is being read."}, 409)
+                    delete_my_voice(str(json.loads(body).get("id", "")))
+                    self.reply({"ok": True, "my_voices": my_voices()})
                 elif self.path == "/voices":
                     if state.running:
                         return self.reply({"error": "Voice samples can be created when nothing else is being read."}, 409)
                     job = json.loads(body)
                     model, lang = str(job.get("model", "")), str(job.get("lang", ""))
                     known = [v for v, _, _ in VOICE_CATALOG.get(model, {}).get(lang, [])]
+                    if model == "clone" and lang in MODELS["clone"]["langs"].split():
+                        known = [v["id"] for v in my_voices()]
                     wanted = [v for v in job.get("voices", []) if v in known]
                     if not wanted:
                         return self.reply({"error": "This model has no such voice in this language."}, 400)

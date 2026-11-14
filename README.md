@@ -77,6 +77,14 @@ Each model comes with several voices: 2 in French and 5 in English for Voxtral, 
 
 A sample that has been published with the project plays at once, without loading a model. Any other sample is created on your Mac the first time you ask for it, then kept in `~/Audiobooks/.voices`. "Create all samples" loads the model once and makes every missing one.
 
+### Your own voice (experimental)
+
+Pick "Your own voice" in the model list to have a book read with a voice you record: yours, or the voice of someone who agrees. Read the short text shown in the page for about 15 seconds, or choose a recording you already have, give it a name and save it. The recording stays on your Mac, in `~/Audiobooks/.voices/mine`, and can be deleted from the page.
+
+This uses Chatterbox (MIT licence), which imitates the voice in the recording and speaks 23 languages. A quiet room matters more than a long recording: the model listens to the first 10 seconds. It is never picked automatically. This part has not been run on a real Mac yet.
+
+Only record a voice with the agreement of the person it belongs to.
+
 To make every sample from the command line, in French and English, for each model that fits your Mac:
 
 ```bash
@@ -125,6 +133,7 @@ On a MacBook Pro M1 with 8 GB, the smallest Mac it was tried on, book2audio pick
 |---|---|---|
 | French | Pocket TTS | 0.6x to 0.8x real time |
 | English | Kokoro | 2.4x |
+| French, Voxtral 4-bit chosen by hand | Voxtral 4-bit | 0.4x |
 
 Below 1x, a book takes longer to create than to listen to: a 10 hour French book needs 13 to 17 hours on that Mac, so let it run overnight. It can be stopped and resumed. Kyutai TTS is not measured yet.
 
